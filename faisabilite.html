@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Démo — isolation et Face ID</title>
+<style>
+  body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:16px;background:#F6F0E7;color:#12263F}
+  h1{font-size:22px;margin:.2em 0}h2{font-size:17px;margin:1.2em 0 .3em}
+  .card{background:#fff;border:1px solid #d8cfc0;border-radius:14px;padding:12px 14px;margin:10px 0}
+  button{font:inherit;padding:12px 16px;border-radius:12px;border:1px solid #045C70;background:#045C70;color:#fff;margin:4px 6px 4px 0;min-height:46px}
+  button.alt{background:#fff;color:#045C70}
+  pre{white-space:pre-wrap;word-break:break-word;background:#f1ece2;padding:10px;border-radius:10px;font-size:13px}
+  .ok{color:#0a6b2d;font-weight:700}.ko{color:#a31515;font-weight:700}.warn{color:#8a5a00;font-weight:700}
+</style></head><body>
+<h1>Démonstration — vérifications</h1>
+<p>Cette page n'envoie rien. Elle sert à vérifier (1) que cette démonstration ne voit aucune donnée de l'application réelle et (2) si Face ID peut ouvrir le coffre sur cet appareil. Données entièrement fictives.</p>
+
+<h2>1. Isolation du stockage</h2>
+<div class="card"><div id="iso">…</div>
+<button id="bIso">Relancer le diagnostic</button>
+<button id="bSeed" class="alt">Écrire une donnée fictive repère</button></div>
+
+<h2>1 bis. Fiches fictives pour essayer</h2>
+<div class="card"><p>Écrit 3 fiches entièrement fictives dans cette démonstration (jamais dans votre application réelle).</p>
+<button id="bDemoData">Charger 3 fiches fictives</button><div id="demoMsg"></div></div>
+
+<h2>2. Face ID (WebAuthn, extension PRF)</h2>
+<div class="card"><div id="bio">Appuyez sur « Lancer le test » : l'iPhone demande Face ID deux fois (création puis lecture).</div>
+<button id="bBio">Lancer le test Face ID</button></div>
+<pre id="log"></pre>
+<script>
+const $ = (id) => document.getElementById(id), log = (m) => { $('log').textContent += m + '\n'; };
+const b2h = (u) => [...new Uint8Array(u)].map((x) => x.toString(16).padStart(2, '0')).join('');
+async function iso() {
+  const out = [];
+  out.push('Origine : ' + location.origin);
+  out.push('Chemin : ' + location.pathname);
+  let dbs = []; try { dbs = (await indexedDB.databases()).map((d) => d.name + ' v' + d.version); } catch (e) { dbs = ['(indexedDB.databases indisponible)']; }
+  out.push('Bases IndexedDB visibles : ' + (dbs.length ? dbs.join(', ') : 'aucune'));
+  const ls = []; for (let i = 0; i < localStorage.length; i++) ls.push(localStorage.key(i));
+  out.push('Clés localStorage : ' + (ls.length ? ls.join(', ') : 'aucune'));
+  let ck = []; try { ck = await caches.keys(); } catch {}
+  out.push('Caches : ' + (ck.length ? ck.join(', ') : 'aucun'));
+  let n = -1; try {
+    if (!dbs.some((d) => d.startsWith('dictaphone-proto'))) { n = 0; throw 0; }
+    n = await new Promise((res) => { const r = indexedDB.open('dictaphone-proto'); r.onsuccess = () => { const d = r.result; if (!d.objectStoreNames.contains('sessions')) { d.close(); res(0); return; } const t = d.transaction('sessions').objectStore('sessions').count(); t.onsuccess = () => { d.close(); res(t.result); }; }; r.onerror = () => res(-1); });
+  } catch (e) {}
+  out.push('Fiches visibles par cette page : ' + n);
+  const real = ls.filter((k) => /dia_vault/.test(k)).length;
+  $('iso').innerHTML = '<pre>' + out.join('\n') + '</pre>' + ('<div class="warn">À interpréter : une démonstration correctement isolée affiche, au premier lancement, aucune fiche et aucune clé issue de votre application réelle. Si vous voyez des fiches que vous n\'avez pas créées ici, ARRÊTEZ et prévenez-moi.</div>');
+}
+$('bIso').onclick = iso;
+$('bSeed').onclick = () => { localStorage.setItem('demo_repere', 'repere-' + Date.now()); iso(); };
+iso();
+
+$('bBio').onclick = async () => {
+  $('log').textContent = '';
+  const el = $('bio');
+  try {
+    if (!window.PublicKeyCredential) throw new Error('WebAuthn indisponible dans ce navigateur.');
+    const plat = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    log('Authentificateur de plateforme disponible : ' + plat);
+    if (!plat) throw new Error('Pas d\'authentificateur de plateforme (Face ID / Touch ID).');
+    const rnd = (n) => crypto.getRandomValues(new Uint8Array(n));
+    log('Création de l\'identifiant (Face ID demandé)…');
+    const cred = await navigator.credentials.create({ publicKey: { rp: { name: 'Dictaphone IA démo' }, user: { id: rnd(16), name: 'demo', displayName: 'Démo' }, challenge: rnd(32),
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, extensions: { prf: {} } } });
+    const ext = cred.getClientExtensionResults();
+    log('Résultat de création : ' + JSON.stringify({ prf: ext.prf ? { enabled: ext.prf.enabled, aDesResultats: !!ext.prf.results } : null }));
+    const salt = rnd(32);
+    const get = async () => {
+      const c = await navigator.credentials.get({ publicKey: { challenge: rnd(32), allowCredentials: [{ id: cred.rawId, type: 'public-key' }], userVerification: 'required', timeout: 60000, extensions: { prf: { eval: { first: salt } } } } });
+      const r = c.getClientExtensionResults().prf; return r && r.results && r.results.first ? b2h(r.results.first) : null;
+    };
+    log('Première lecture du secret (Face ID demandé)…');
+    const s1 = await get(); log('Secret 1 : ' + (s1 ? s1.slice(0, 8) + '… (' + s1.length / 2 + ' octets)' : 'AUCUN'));
+    log('Seconde lecture (Face ID demandé)…');
+    const s2 = await get(); log('Secret 2 : ' + (s2 ? s2.slice(0, 8) + '…' : 'AUCUN'));
+    if (s1 && s2 && s1 === s2) el.innerHTML = '<span class="ok">Concluant sur cet appareil : le secret est disponible et stable.</span> Face ID peut servir à ouvrir le coffre. Notez aussi : appli installée sur l\'écran d\'accueil ou onglet Safari ? Refaites le test dans les deux cas.';
+    else if (!s1) el.innerHTML = '<span class="ko">Non concluant : l\'appareil ne fournit pas le secret (PRF absent).</span> Face ID ne peut pas ouvrir le coffre ; le mot de passe restera la seule méthode.';
+    else el.innerHTML = '<span class="ko">Non fiable : le secret change d\'une lecture à l\'autre.</span> Ne pas utiliser.';
+    log('Mode d\'affichage : ' + (matchMedia('(display-mode: standalone)').matches ? 'application installée (standalone)' : 'onglet Safari'));
+  } catch (e) { el.innerHTML = '<span class="ko">Échec : ' + String(e.message || e).replace(/</g, '&lt;') + '</span>'; log('Erreur : ' + (e.name || '') + ' ' + (e.message || e)); }
+};
+</script><script type="module">
+import * as DB from './db.js';
+const base = { category: 'clients', folderId: null, titleAuto: false, source: 'texte', segments: [], bookmarks: [], durationSec: 0, hadAudio: false, nChunks: 0, doneChunks: 0, hasOriginal: false, reportSections: null };
+const T = [
+  ['Bilan patrimonial Valmont (fictif)', 'Marie Valmont', 'Bilan patrimonial',
+   "Bonjour, je suis Marie Valmont, je travaille chez Airbus à Toulouse depuis douze ans. Mon mari Jean-Pierre est architecte, il est né le 14 mars 1971 à Lyon. Nous avons deux enfants, Chloé et Louis. On a une assurance vie chez Generali, environ soixante mille euros, et un PEA avec des actions Airbus, à peu près quarante mille euros. Mon numéro est le 06 12 34 56 78 et mon mail marie.valmont@exemple-test.fr. Pour l'IBAN, c'est FR76 3000 6000 0112 3456 7890 189. Notre conseiller, monsieur Fabre, travaille à la Société Générale.",
+   { persons: [{ name: 'Marie Valmont', role: 'client', gender: 'F' }, { name: 'Jean-Pierre Valmont', role: 'conjoint', gender: 'M' }], employers: ['Airbus'] }],
+  ['Succession Pelletier (fictif)', 'Aurélie Pelletier', 'Succession',
+   "Aurélie, pour la succession de votre oncle, le docteur Fontaine, le notaire c'est maître Roux. Roux m'a dit que Fontaine avait laissé un contrat chez Allianz, de cent vingt mille euros. Mon cousin Lucas est au courant. C'est Pelletier qui hérite, pas Lucas. Elle habite au 12 rue des Acacias à Lyon et elle est née le trois mai mille neuf cent soixante-seize à Roubaix. Son numéro, c'est zéro sept, quatre-vingt-un, vingt-deux, trente-trois, quarante-quatre.",
+   { persons: [{ name: 'Aurélie Pelletier', role: 'client', gender: 'F' }] }],
+  ['Point investissements Giraud (fictif)', 'Laurent Giraud', 'Point investissements',
+   "alors oui c'est monsieur giraud euh laurent hein, il travaille chez renault, sa femme stéphanie est infirmière, et leur fils enzo fait des études. ils ont une assurance vie chez axa et des actions renault. Sa société, Giraud Conseil, SIREN 732 829 320, s'occupe de la gestion. Le total des frais est de deux pour cent.",
+   { persons: [{ name: 'Laurent Giraud', role: 'client', gender: 'M' }], employers: ['Renault'] }]
+];
+$('bDemoData').onclick = async () => {
+  try {
+    for (let i = 0; i < T.length; i++) {
+      const [title, who, subject, transcript, sheet] = T[i];
+      const now = Date.now() - i * 3600000;
+      await DB.putSession({ ...base, id: 'demo-' + (i + 1), title, name: title, who, subject, date: now, createdAt: now, updatedAt: now, transcript,
+        protect: { v: 1, level: 'renforce', sheet: { persons: [], employers: [], companies: [], cities: [], addresses: [], others: [], ...sheet }, overrides: { byText: {}, byPos: {}, labels: {} }, alwaysMask: [], neverMask: [] } });
+    }
+    $('demoMsg').innerHTML = '<span class="ok">3 fiches fictives écrites.</span> Ouvrez l\'application (Bibliothèque), puis une fiche › onglet Protéger.';
+    iso();
+  } catch (e) { $('demoMsg').innerHTML = '<span class="ko">Échec : ' + String(e.message || e).replace(/</g, '&lt;') + '</span>'; }
+};
+</script>
+</body></html>
