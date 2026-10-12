@@ -75,6 +75,37 @@ export function labelTable(res) {
   for (const s of res.spans) if (s.decision === 'mask' && s.label && !m.has(s.label)) m.set(s.label, s.person ? s.person.name : s.text.replace(/^(?:M\.|Mme|Mlle|Monsieur|Madame|Mademoiselle|Maître)\s+/i, ''));
   return m;
 }
+// Instantané des correspondances au MOMENT de la copie : ce qui a réellement été envoyé (même texte protégé, mêmes étiquettes).
+// Il reste dans la fiche (donc chiffré avec elle par le coffre) et n'est jamais transmis ; il évite qu'un changement ultérieur
+// des corrections ou des listes décale les lettres (Personne A / B…) et fasse rétablir un mauvais nom.
+// Paires [étiquette, original, genre] ; genre « pers » = personne (jamais rétablie par défaut), « info » = lieu, entreprise, produit…
+export function restorePairsOf(res) {
+  const kind = new Map();
+  for (const s of res.spans) if (s.decision === 'mask' && s.label && !kind.has(s.label)) kind.set(s.label, s.ent && s.ent.fam === 'pers' ? 'pers' : 'info');
+  const pairs = []; for (const [label, original] of labelTable(res)) if (label && original) pairs.push([label, original, kind.get(label) || 'info']);
+  return pairs;
+}
+export function buildRestoreSnapshot(res, e) {
+  return { v: 1, at: Date.now(), hash: hashText(res.protectedText), o: hashText((e && e.original) || ''), pairs: restorePairsOf(res) };
+}
+// Source des correspondances pour rétablir les noms dans un compte rendu de cette fiche, ou null si elle n'est pas fiable :
+//  1. l'instantané enregistré à la copie ; 2. à défaut (ancienne fiche), un recalcul seulement s'il redonne EXACTEMENT le texte copié.
+export async function restoreSource(e) {
+  const P = e.protect;
+  if (!P) return null;
+  if (P.restore && Array.isArray(P.restore.pairs) && P.restore.pairs.length) {
+    // l'instantané ne vaut que pour le document pour lequel il a été fait : transcription remplacée depuis, donc inutilisable
+    if (typeof P.restore.o === 'string' && P.restore.o !== hashText(e.original || '')) return null;
+    return { pairs: P.restore.pairs, at: P.restore.at || P.copiedAt || 0, how: 'copie' };
+  }
+  if (!P.reviewHash) return null;
+  try {
+    const { res } = await runProtect(e);
+    if (hashText(res.protectedText) !== P.reviewHash) return null;
+    const pairs = restorePairsOf(res);
+    return pairs.length ? { pairs, at: P.copiedAt || 0, how: 'recalcul' } : null;
+  } catch { return null; }
+}
 // ---------------------------------------------------------------------
 // Surligne la première occurrence d'un terme dans une zone de texte (retour depuis le contrôle anti-fuite vers l'expression à corriger).
 export function highlightTerm(root, term) {
@@ -409,7 +440,7 @@ export function protectTab({ e, templates, edit, saver, parcours = false }) {
       const ok = h('input', { type: 'checkbox', id: 'pcheck2' });
       const go = h('button', { class: 'btn primary', disabled: true, onclick: async () => {
         const done = await copyText(prompt);
-        if (done) { P.copiedAt = Date.now(); P.reviewedAt = Date.now(); edit(); toast('Texte copié. Rien n\'a été envoyé : collez-le vous-même dans l\'outil de votre choix.', 5200); close(); draw(); }
+        if (done) { P.copiedAt = Date.now(); P.reviewedAt = Date.now(); P.restore = buildRestoreSnapshot(res, e); edit(); toast('Texte copié. Rien n\'a été envoyé : collez-le vous-même dans l\'outil de votre choix.', 5200); close(); draw(); }
         else toast('Copie impossible : votre navigateur a refusé l\'accès au presse-papiers.', 5000);
       } }, icon('copy'), h('span', { text: 'Copier le texte protégé' }));
       ok.addEventListener('change', () => { go.disabled = !ok.checked || leaks.length > 0 || titleLeak; });

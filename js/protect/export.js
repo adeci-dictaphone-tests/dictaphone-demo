@@ -37,8 +37,12 @@ export function instructionsBlock({ dateLabel = '' } = {}) {
     '',
     'PSEUDONYMES',
     '- Les étiquettes comme « Client A », « Personne B », « Entreprise A », « Ville A », « Produit A » ou « Information masquée A » remplacent des informations masquées. Ne cherche jamais à deviner ni à reconstituer les identités réelles ; reprends l\'étiquette telle quelle, sans la compléter ni la transformer.',
-    '- Ne répète pas ces étiquettes mécaniquement : préfère « le foyer », « le couple », « le client », « l\'un des conjoints », « le PEA », « le contrat d\'assurance-vie », « le portefeuille ». N\'utilise une étiquette que lorsqu\'il faut distinguer les titulaires, les personnes ou les lieux concernés.',
-    '- Ne supprime pas une information patrimoniale au motif qu\'elle est liée à une personne ou à une société pseudonymisée : garde-la, avec l\'étiquette si nécessaire.',
+    '- Ne supprime pas une information patrimoniale au motif qu\'elle est liée à une personne ou à une société pseudonymisée : garde-la.',
+    '',
+    'DESTINATION : FICHE CRM DU CLIENT',
+    '- Le compte rendu sera copié dans la fiche CRM du client concerné : il est inutile de répéter « Client A », « le client » ou son nom. Écris à la forme impersonnelle, sans sujet : « Résidence principale à Ville A », « Appartement locatif à Ville B », « Projet de résidence secondaire à Ville C », « PEA Fortuneo : 142 k€, principalement ETF World » — et non « Client A possède… », « Client A souhaite… », « Client A envisage… ».',
+    '- Conserve en revanche les distinctions indispensables entre le client, son conjoint, ses enfants, ses associés ou d\'autres personnes quand le rôle ou la propriété d\'un actif compte (« PEA du conjoint : … », « Assurance-vie des enfants : … »). N\'attribue jamais au client un actif qui appartient à une autre personne par simplification, ni l\'inverse ; si le titulaire est incertain, ne le précise pas et ajoute « titulaire à confirmer » seulement si c\'est important.',
+    '- Quand une autre personne doit être distinguée, désigne-la par son rôle (« le conjoint », « l\'aîné », « l\'associé ») ; n\'utilise une étiquette (« Personne B ») que si le rôle est inconnu ou si plusieurs personnes ont le même rôle.',
   ].join('\n');
 }
 

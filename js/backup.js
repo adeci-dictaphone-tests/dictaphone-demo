@@ -222,6 +222,13 @@ function cleanTrashed(t) {
 }
 // Fiche d'identité et décisions de pseudonymisation : structure validée, rien n'est exécuté ni inséré tel quel.
 const strList = (l, max = 200, len = 200) => (Array.isArray(l) ? l.slice(0, max).filter((x) => typeof x === 'string' && x.trim()).map((x) => x.slice(0, len)) : []);
+// Instantané des correspondances étiquette → original (rétablissement des noms) : paires de chaînes bornées, rien d'autre.
+function cleanRestore(r) {
+  if (!r || typeof r !== 'object' || !Array.isArray(r.pairs)) return null;
+  const pairs = r.pairs.slice(0, 2000).filter((x) => Array.isArray(x) && typeof x[0] === 'string' && typeof x[1] === 'string' && x[0].trim() && x[1].trim()).map((x) => [x[0].slice(0, 80), x[1].slice(0, 200), x[2] === 'pers' ? 'pers' : 'info']);
+  if (!pairs.length) return null;
+  return { v: 1, at: num(r.at, 0), hash: typeof r.hash === 'string' ? r.hash.slice(0, 40) : '', ...(typeof r.o === 'string' ? { o: r.o.slice(0, 40) } : {}), pairs };
+}
 function cleanProtect(p) {
   if (!p || typeof p !== 'object') return null;
   const sh = p.sheet && typeof p.sheet === 'object' ? p.sheet : {};
@@ -239,6 +246,7 @@ function cleanProtect(p) {
     overrides: { byText, byPos, labels }, alwaysMask: strList(p.alwaysMask, 500), neverMask: strList(p.neverMask, 500),
     ...(Number.isFinite(p.copiedAt) ? { copiedAt: p.copiedAt } : {}), ...(Number.isFinite(p.reviewedAt) ? { reviewedAt: p.reviewedAt } : {}),
     ...(typeof p.reviewHash === 'string' ? { reviewHash: p.reviewHash.slice(0, 40) } : {}), ...(p.visited ? { visited: true } : {}), leakAcks: strList(p.leakAcks, 500),
+    ...(cleanRestore(p.restore) ? { restore: cleanRestore(p.restore) } : {}),
   };
 }
 function cleanProtectGlobal(g) {

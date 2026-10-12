@@ -8,6 +8,7 @@ import { fmtDate, fmtDateTime, reportText, transcriptText, copyText, downloadTex
 import { buildWavBlob, attachWav, audioDigest } from '../audio.js';
 import * as DB from '../db.js';
 import { parseReport, buildSections } from "./report-import.js";
+import { applyRestore, cleanPairs, mergeResults, isPerson } from "./restore-names.js";
 import { cleanText, pickFile, readImport, previewImport, words as wordsOf } from './import.js';
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -842,7 +843,7 @@ export async function ficheView({ params, query }) {
             close();
             p.then((done) => {
               if (!done) { toast('Copie impossible : le navigateur a refusé l\'accès au presse-papiers.', 6000); return; }
-              e.protect.reviewedAt = Date.now(); e.protect.reviewHash = m.hashText(res.protectedText); e.protect.copiedAt = Date.now(); edit();
+              e.protect.reviewedAt = Date.now(); e.protect.reviewHash = m.hashText(res.protectedText); e.protect.copiedAt = Date.now(); e.protect.restore = m.buildRestoreSnapshot(res, e); edit();
               toast('Texte copié. Collez-le dans ChatGPT pour générer votre compte rendu.', 8000);
               renderBody();
             });
@@ -878,13 +879,30 @@ export async function ficheView({ params, query }) {
   function pasteReportBlock(refresh) {
     const ta = h('textarea', { class: 'textarea', rows: '6', placeholder: 'Collez ici le compte rendu généré par ChatGPT…', 'aria-label': 'Compte rendu collé', spellcheck: 'false' });
     const pasteBtn = h('button', { class: 'btn small', onclick: async () => { try { const t = await navigator.clipboard.readText(); if (!t.trim()) return toast('Le presse-papiers est vide.'); ta.value = t; } catch { toast('Appuyez longuement dans la zone, puis « Coller ».', 4200); ta.focus(); } } }, icon('clipboard'), h('span', { text: 'Coller le presse-papiers' }));
-    const importBtn = h('button', { class: 'btn primary', onclick: () => {
+    const importBtn = h('button', { class: 'btn primary', onclick: async () => {
       const text = ta.value.trim(); if (!text) return toast('Collez d\'abord le compte rendu.');
       const tpl = templates.find((x) => x.id === e.templateId) || null;
       const tsec = tpl ? tpl.sections : [];
       const sp = parseReport(text, tsec);
       const mapping = {};
       sp.blocks.forEach((b, i) => { mapping[i] = b.match ? 't:' + b.match.idx : 'new'; });
+      // Correspondances LOCALES pour rétablir les noms : uniquement si elles sont fiables (instantané pris à la copie, ou recalcul identique à la copie).
+      let src = null; try { src = await (await import('./protect-ui.js')).restoreSource(e); } catch { src = null; }
+      const allPairs = src ? cleanPairs(src.pairs) : [];
+      // Par défaut on ne rétablit PAS les personnes (le compte rendu va dans la fiche CRM du client) : lieux, entreprises, produits seulement.
+      // Une personne n'est rétablie que si l'utilisateur la coche (correspondance fiable, validée).
+      const persOn = new Set();
+      const activePairs = () => allPairs.filter((p) => !isPerson(p) || persOn.has(p[0]));
+      const known = allPairs.map((p) => p[0]);
+      const parts = [sp.preamble, ...sp.blocks.map((x) => x.content), ...sp.blocks.map((x) => (x.match ? '' : x.title))];
+      const compute = () => (allPairs.length ? mergeResults(parts.map((t) => applyRestore(t, activePairs(), { known }))) : null);
+      let rr = compute();
+      const everFound = !!allPairs.length && applyRestore(parts.join('\n'), allPairs).total > 0;
+      const persFound = allPairs.filter((p) => isPerson(p) && applyRestore(parts.join('\n'), [p]).total > 0);
+      const canRestore = everFound;
+      const strangers = !allPairs.length ? applyRestore(text, []).unknown : [];
+      let restored = false;
+      const rest = (t) => (restored && allPairs.length ? applyRestore(t, activePairs(), { known }).text : t);
       sheet({ title: 'Importer le compte rendu', wide: true, build(b, close) {
         const nDet = sp.blocks.length, nOk = sp.found;
         b.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: !nDet
@@ -892,65 +910,118 @@ export async function ficheView({ params, query }) {
           : `${nDet} partie${nDet > 1 ? 's' : ''} détectée${nDet > 1 ? 's' : ''}, dont ${nOk} reconnue${nOk > 1 ? 's' : ''} d'après la trame${tpl ? ' « ' + tpl.name + ' »' : ''}. Vérifiez la correspondance de chacune avant d'importer ; vous pourrez tout modifier ensuite.` }));
         if (sp.preamble) b.append(h('div', { class: 'banner', style: { marginTop: 0 } }, icon('info'), h('div', { text: 'Le texte placé avant la première rubrique est conservé dans une rubrique « Introduction ».' })));
         // Texte aplati ou rubriques manquantes : la répartition proposée n'est pas certaine, l'utilisateur doit la valider explicitement
-        const needCheck = nDet > 0 && (sp.reflowed > 0 || sp.noColon || (tpl && sp.missing.length > 0));
+        // (des rubriques simplement absentes sont normales : un compte rendu synthétique n'écrit que ce qui a été dit ; seule une partie non reconnue est ambiguë)
+        // une partie non reconnue que l'utilisateur a rattachée lui-même à une rubrique de la trame n'est plus ambiguë
+        const needCheck = () => nDet > 0 && (sp.reflowed > 0 || sp.noColon || sp.blocks.some((x, i) => !x.match && !String(mapping[i]).startsWith('t:')));
+        const needNow = () => needCheck() || (restored && !!rr && (rr.ambiguous.length > 0 || rr.unknown.length > 0));
         if (sp.reflowed) b.append(h('div', { class: 'banner warn', style: { marginTop: '8px' } }, icon('info'), h('div', { text: `Le texte collé ne contenait plus (ou presque plus) de retours à la ligne : ${sp.reflowed} titre${sp.reflowed > 1 ? 's' : ''} retrouvé${sp.reflowed > 1 ? 's' : ''} dans le fil du texte, listes à puces reconstituées. Le texte original reste conservé tel quel.` })));
         if (nDet && tpl && sp.missing.length) b.append(h('p', { class: 'hint', text: 'Rubriques de la trame non retrouvées : ' + sp.missing.join(', ') + '. Elles resteront vides ; vous pouvez déplacer une partie vers l\'une d\'elles avec les listes ci-dessous.' }));
-        const chk = needCheck ? h('input', { type: 'checkbox' }) : null;
+        const chk = h('input', { type: 'checkbox' });
+        const chkLabel = h('label', { class: 'check' }, chk, h('span', { text: 'J\'ai vérifié la répartition proposée et les points signalés ci-dessus.' }));
+        const okBtn = h('button', { class: 'btn primary', text: 'Importer dans la fiche' });
+        const syncOk = () => { const n = needNow(); chkLabel.hidden = !n; okBtn.disabled = n && !chk.checked; };
+        chk.addEventListener('change', syncOk);
+
+        // ----- rétablir les noms (local, facultatif, jamais automatique) -----
+        const restoreBox = h('div', { style: { marginTop: '10px' } });
+        const cards = h('div', {});
+        const renderRestore = () => {
+          const kids = [];
+          const nInfo = (n) => `${n} information${n > 1 ? 's' : ''}`;
+          if (!restored && canRestore) {
+            const nPreview = (rr ? rr.total : 0);
+            kids.push(h('div', { class: 'btn-row', style: { alignItems: 'center' } },
+              h('button', { class: 'btn small', onclick: () => { restored = true; rr = compute(); renderRestore(); renderCards(); syncOk(); } }, icon('user'), h('span', { text: 'Rétablir les informations' })),
+              h('span', { class: 'hint', style: { margin: 0 }, text: nPreview ? `${nInfo(nPreview)} (lieux, entreprises…) rétablissable${nPreview > 1 ? 's' : ''} localement.` : 'Seules des personnes sont citées : à valider une par une.' })));
+          } else if (restored && rr) {
+            kids.push(h('div', { class: 'banner', style: { marginTop: 0 } }, icon('check'), h('div', {},
+              h('div', { text: `${nInfo(rr.total)} rétablie${rr.total > 1 ? 's' : ''} localement (lieux, entreprises…). Rien n'est enregistré avant « Importer dans la fiche ».` }),
+              h('div', { class: 'btn-row', style: { marginTop: '8px' } }, h('button', { class: 'btn small', onclick: () => { restored = false; renderRestore(); renderCards(); syncOk(); } }, icon('back'), h('span', { text: 'Revenir aux pseudonymes' }))))));
+            // personnes : laissées en pseudonymes (inutiles dans une fiche CRM) sauf validation explicite
+            if (persFound.length) {
+              kids.push(h('div', { class: 'card', style: { marginTop: '8px' } },
+                h('div', { class: 'hint', style: { margin: '0 0 6px' }, text: 'Personnes citées par un pseudonyme (non rétablies par défaut). Cochez seulement si l\'identité est indispensable pour distinguer plusieurs personnes :' }),
+                ...persFound.map((p) => { const c = h('input', { type: 'checkbox', checked: persOn.has(p[0]) });
+                  c.addEventListener('change', () => { if (c.checked) persOn.add(p[0]); else persOn.delete(p[0]); rr = compute(); renderRestore(); renderCards(); syncOk(); });
+                  return h('label', { class: 'check' }, c, h('span', { text: `${p[0]} → ${p[1]}` })); })));
+            }
+            if (rr.ambiguous.length) kids.push(h('p', { class: 'hint', style: { color: 'var(--warn, #9a6700)' }, text: 'À vérifier, laissé tel quel (casse différente) : ' + rr.ambiguous.map((x) => '« ' + x + ' »').join(', ') + '.' }));
+            if (rr.unknown.length) kids.push(h('p', { class: 'hint', style: { color: 'var(--warn, #9a6700)' }, text: 'Pseudonyme non reconnu (modifié par ChatGPT ou inconnu de cette fiche), laissé tel quel : ' + rr.unknown.map((x) => '« ' + x + ' »').join(', ') + '.' }));
+            if (rr.restored.length) kids.push(h('details', { class: 'evid' }, h('summary', { text: 'Voir les remplacements effectués (affichage local)' }),
+              rr.restored.map((x) => h('div', { class: 'kv' }, h('span', { text: x.label + (x.n > 1 ? ' ×' + x.n : '') }), h('b', { text: x.original })))));
+            kids.push(h('div', { class: 'banner warn', style: { marginTop: '8px' } }, icon('shield'), h('div', { text: 'Le compte rendu enregistré contiendra de vraies informations : exportez-le seulement vers des destinataires autorisés. Le texte brut reçu de ChatGPT reste conservé tel quel, avec les pseudonymes.' })));
+          } else if (!allPairs.length && strangers.length) {
+            kids.push(h('p', { class: 'hint', text: 'Les informations masquées ne peuvent pas être rétablies pour cette fiche : correspondances indisponibles, ou texte modifié depuis la copie. Les pseudonymes sont conservés tels quels.' }));
+          } else if (allPairs.length && !everFound && rr && (rr.unknown.length || rr.ambiguous.length)) {
+            kids.push(h('p', { class: 'hint', text: 'Aucun pseudonyme de cette fiche n\'a été retrouvé avec certitude dans ce texte : rien n\'est rétabli.' }));
+          }
+          restoreBox.replaceChildren(...kids.filter(Boolean));
+        };
         const used = () => { const c = {}; Object.values(mapping).forEach((m) => { c[m] = (c[m] || 0) + 1; }); return c; };
         const dupNote = h('p', { class: 'hint', style: { color: 'var(--warn, #9a6700)' } });
         const refreshDup = () => { const c = used(); const n = Object.entries(c).filter(([m, k]) => m.startsWith('t:') && k > 1).length; dupNote.textContent = n ? 'Plusieurs parties vont dans la même rubrique : leur texte sera mis à la suite.' : ''; };
-        sp.blocks.forEach((blk, i) => {
-          const sel = h('select', { class: 'field', 'aria-label': 'Rubrique de destination pour « ' + blk.title + ' »' });
-          tsec.forEach((ts, n) => sel.append(h('option', { value: 't:' + n, text: (ts.level === 2 ? '↳ ' : '') + ts.title })));
-          sel.append(h('option', { value: 'new', text: '➕ Nouvelle rubrique « ' + blk.title + ' »' }));
-          if (i > 0) sel.append(h('option', { value: 'prev', text: '⤴ À la suite de la partie précédente' }));
-          sel.value = mapping[i];
-          sel.addEventListener('change', () => { mapping[i] = sel.value; refreshDup(); });
-          const firstLine = (blk.content.split('\n').find((l) => l.trim()) || '').slice(0, 110);
-          b.append(h('div', { class: 'card', style: { marginTop: '8px' } },
-            h('div', { style: { fontWeight: '600', color: 'var(--ink)' }, text: blk.detected + (blk.match ? (blk.match.how === 'exact' ? '  ✓' : '  ≈ reconnue') : '  ? non reconnue') + (blk.inline ? ' · retrouvée dans le fil du texte' : '') }),
-            h('div', { class: 'hint', style: { margin: '2px 0 6px' }, text: `${blk.content.length.toLocaleString('fr-FR')} caractères${firstLine ? ' · ' + firstLine : ''}` }), sel));
-        });
-        b.append(dupNote);
+        const renderCards = () => {
+          cards.replaceChildren(...sp.blocks.map((blk, i) => {
+            const sel = h('select', { class: 'field', 'aria-label': 'Rubrique de destination pour « ' + rest(blk.title) + ' »' });
+            tsec.forEach((ts, n) => sel.append(h('option', { value: 't:' + n, text: (ts.level === 2 ? '↳ ' : '') + ts.title })));
+            sel.append(h('option', { value: 'new', text: '➕ Nouvelle rubrique « ' + rest(blk.title) + ' »' }));
+            if (i > 0) sel.append(h('option', { value: 'prev', text: '⤴ À la suite de la partie précédente' }));
+            sel.value = mapping[i];
+            sel.addEventListener('change', () => { mapping[i] = sel.value; refreshDup(); syncOk(); });
+            const content = rest(blk.content);
+            const firstLine = (content.split('\n').find((l) => l.trim()) || '').slice(0, 110);
+            return h('div', { class: 'card', style: { marginTop: '8px' } },
+              h('div', { style: { fontWeight: '600', color: 'var(--ink)' }, text: rest(blk.detected) + (blk.match ? (blk.match.how === 'exact' ? '  ✓' : '  ≈ reconnue') : '  ? non reconnue') + (blk.inline ? ' · retrouvée dans le fil du texte' : '') }),
+              h('div', { class: 'hint', style: { margin: '2px 0 6px' }, text: `${content.length.toLocaleString('fr-FR')} caractères${firstLine ? ' · ' + firstLine : ''}` }), sel);
+          }));
+        };
+        renderRestore(); renderCards();
+        b.append(restoreBox, cards, dupNote);
         if (S.hasReport(e)) b.append(h('p', { class: 'hint', text: 'Le compte rendu actuel est conservé dans « Compte rendu précédent » (rétablissement possible).' }));
         b.append(h('details', { class: 'evid' }, h('summary', { text: 'Texte reçu de ChatGPT (conservé tel quel dans la fiche)' }), h('pre', { class: 'pview doc', style: { whiteSpace: 'pre-wrap' }, text: sp.raw })));
-        const okBtn = h('button', { class: 'btn primary', text: 'Importer dans la fiche', disabled: !!chk, onclick: async () => {
-            if (S.hasReport(e)) e.reportHistory = S.pushHistory(e.reportHistory, { text: JSON.stringify(e.reportSections || []), reason: 'avant import ChatGPT' });
-            const secs = nDet ? buildSections(sp, tsec, mapping, S.uid) : [{ id: S.uid('r'), title: 'Introduction', content: sp.preamble || sp.raw.trim() }, ...tsec.map((ts) => ({ id: S.uid('r'), title: ts.title, content: '', ...(ts.level === 2 ? { level: 2 } : {}) }))];
-            e.reportSections = secs; e.reportRaw = sp.raw; e.reportRawAt = Date.now(); e.namesRestored = false; delete e.iaInfo;
-            edit(); await saver.flush(); close(); toast('Compte rendu importé'); refresh();
-        } });
-        if (chk) {
-          chk.addEventListener('change', () => { okBtn.disabled = !chk.checked; });
-          b.append(h('label', { class: 'check' }, chk, h('span', { text: 'J\'ai vérifié la répartition proposée ci-dessus (titres retrouvés dans le fil du texte ou rubriques manquantes).' })));
-        }
+        okBtn.addEventListener('click', async () => {
+          if (okBtn.disabled) return;
+          if (S.hasReport(e)) e.reportHistory = S.pushHistory(e.reportHistory, { text: JSON.stringify(e.reportSections || []), reason: 'avant import ChatGPT' });
+          const useSp = restored ? { ...sp, preamble: rest(sp.preamble), blocks: sp.blocks.map((x) => ({ ...x, title: x.match ? x.title : rest(x.title), content: rest(x.content) })) } : sp;
+          const secs = nDet ? buildSections(useSp, tsec, mapping, S.uid) : [{ id: S.uid('r'), title: 'Introduction', content: rest(sp.preamble || sp.raw.trim()) }, ...tsec.map((ts) => ({ id: S.uid('r'), title: ts.title, content: '', ...(ts.level === 2 ? { level: 2 } : {}) }))];
+          // le texte brut reçu reste TEL QUEL (avec les pseudonymes) : jamais remplacé par la version rétablie
+          e.reportSections = secs; e.reportRaw = sp.raw; e.reportRawAt = Date.now(); e.namesRestored = !!(restored && rr && rr.total > 0); delete e.iaInfo;
+          edit(); await saver.flush(); close(); toast(restored ? 'Compte rendu importé, noms rétablis. Vérifiez-le avant tout export.' : 'Compte rendu importé', restored ? 5000 : 3500); refresh();
+        });
+        syncOk();
+        b.append(chkLabel);
         b.append(h('div', { class: 'sheet-actions' }, okBtn, h('button', { class: 'btn', text: 'Annuler', onclick: close })));
       } });
     } }, icon('check'), h('span', { text: 'Importer dans les rubriques' }));
-    const restoreBtn = h('button', { class: 'btn small', onclick: () => restoreNamesFlow(refresh) }, icon('user'), h('span', { text: 'Remettre les vrais noms (facultatif)' }));
+    const restoreBtn = h('button', { class: 'btn small', onclick: () => restoreNamesFlow(refresh) }, icon('user'), h('span', { text: 'Rétablir les informations (facultatif)' }));
     return h('div', { class: 'card' }, h('div', { class: 'rt serif', style: { fontSize: '19px', color: 'var(--ink)' }, text: 'Coller le compte rendu de ChatGPT' }),
       h('p', { class: 'hint', text: 'Collez la réponse de ChatGPT. Elle est découpée en rubriques d\'après la trame choisie ; vous vérifiez la correspondance avant l\'import, puis vous pouvez la relire et la modifier.' }), ta,
       h('div', { class: 'btn-row', style: { marginTop: '10px' } }, pasteBtn, importBtn), h('div', { style: { height: '8px' } }), S.hasReport(e) ? restoreBtn : null);
   }
-  // Réintégration LOCALE et facultative des identités : étiquette → nom d'origine, avec aperçu et vérification avant export. La table ne quitte jamais l'appareil.
+  // Rétablissement LOCAL et facultatif APRÈS import (compte rendu déjà enregistré). Mêmes règles que dans la fenêtre d'import :
+// correspondances fiables seulement ; lieux, entreprises et autres informations par défaut ; personnes seulement si cochées.
   async function restoreNamesFlow(refresh) {
     try {
-      const { runProtect, labelTable } = await import('./protect-ui.js');
-      const { res } = await runProtect(e); const table = labelTable(res);
+      const src = await (await import('./protect-ui.js')).restoreSource(e);
+      if (!src) { toast('Rétablissement impossible pour cette fiche : correspondances indisponibles ou texte modifié depuis la copie. Les pseudonymes sont conservés.', 7000); return; }
       const all = (e.reportSections || []).map((x) => x.content || '').join('\n');
-      const pairs = [...table.entries()].filter(([lab]) => new RegExp('(?<![\\p{L}\\p{N}])' + lab.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\p{L}\\p{N}])', 'u').test(all)).sort((a, b) => b[0].length - a[0].length);
-      sheet({ title: 'Remettre les vrais noms', build(b, close) {
-        if (!pairs.length) { b.append(h('p', { class: 'hint', text: 'Aucune étiquette reconnue dans ce compte rendu (par exemple « Client A »). Rien à remettre.' }), h('button', { class: 'btn', text: 'Fermer', onclick: close })); return; }
-        b.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: 'Aperçu : les étiquettes ci-dessous seront remplacées par les noms d\'origine, localement. ChatGPT peut avoir reformulé certaines étiquettes : celles-ci ne seront pas retrouvées.' }),
-          ...pairs.map(([lab, orig]) => h('div', { class: 'kv' }, h('span', { text: lab }), h('b', { text: orig }))),
-          h('div', { class: 'banner warn' }, icon('shield'), h('div', { text: 'Après remplacement, le compte rendu contient des noms réels : n\'exportez-le qu\'à des destinataires autorisés. Une vérification vous sera demandée avant tout export.' })),
-          h('div', { class: 'sheet-actions' }, h('button', { class: 'btn primary', text: 'Remettre les noms', onclick: async () => {
-            e.reportHistory = S.pushHistory(e.reportHistory, { text: JSON.stringify(e.reportSections || []), reason: 'avant réintégration des noms' });
-            for (const sec of e.reportSections || []) for (const [lab, orig] of pairs) sec.content = (sec.content || '').replace(new RegExp('(?<![\\p{L}\\p{N}])' + lab.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\p{L}\\p{N}])', 'gu'), () => orig);
-            e.namesRestored = true; edit(); await saver.flush(); close(); toast('Noms remis. Vérifiez le compte rendu avant export.', 5000); refresh();
+      const pairs = cleanPairs(src.pairs).filter((p) => applyRestore(all, [p]).total > 0);
+      const on = new Set(pairs.filter((p) => !isPerson(p)).map((p) => p[0]));
+      sheet({ title: 'Rétablir les informations', build(b, close) {
+        if (!pairs.length) { b.append(h('p', { class: 'hint', text: 'Aucun pseudonyme de cette fiche n\'a été retrouvé avec certitude dans ce compte rendu. Rien à rétablir.' }), h('button', { class: 'btn', text: 'Fermer', onclick: close })); return; }
+        b.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: 'Les pseudonymes cochés seront remplacés localement par les informations d\'origine. Les personnes ne sont pas cochées par défaut : le compte rendu n\'a généralement pas besoin du nom du client.' }),
+          ...pairs.map((p) => { const c = h('input', { type: 'checkbox', checked: on.has(p[0]) }); c.addEventListener('change', () => { if (c.checked) on.add(p[0]); else on.delete(p[0]); });
+            return h('label', { class: 'check' }, c, h('span', { text: `${p[0]} → ${p[1]}` })); }),
+          h('div', { class: 'banner warn' }, icon('shield'), h('div', { text: 'Après remplacement, le compte rendu contient de vraies informations : n\'exportez-le qu\'à des destinataires autorisés. Une vérification vous sera demandée avant tout export.' })),
+          h('div', { class: 'sheet-actions' }, h('button', { class: 'btn primary', text: 'Rétablir', onclick: async () => {
+            const chosen = pairs.filter((p) => on.has(p[0]));
+            if (!chosen.length) return toast('Aucun pseudonyme coché.');
+            e.reportHistory = S.pushHistory(e.reportHistory, { text: JSON.stringify(e.reportSections || []), reason: 'avant rétablissement des informations' });
+            for (const sec of e.reportSections || []) sec.content = applyRestore(sec.content || '', chosen).text;
+            e.namesRestored = true; edit(); await saver.flush(); close(); toast('Informations rétablies. Vérifiez le compte rendu avant export.', 5000); refresh();
           } }), h('button', { class: 'btn', text: 'Annuler', onclick: close })));
       } });
-    } catch (err) { toast('Impossible : ' + (err.message || err), 5000); }
+    } catch (err) { toast('Impossible de rétablir les informations.', 5000); }
   }
   function stepCompteRendu() {
     const wrap = h('div', {});
