@@ -66,8 +66,8 @@ export async function settingsView({ query }) {
             const back = JSON.parse(await B.decryptEnvelope(JSON.parse(text), pw1.value));
             if (back.sessions.length !== built.sessions.length || back.folders.length !== built.folders.length || (back.originals || []).length !== (built.originals || []).length) throw new Error('la vérification de la sauvegarde a échoué : aucun fichier créé');
           }
-          const name = `Dictaphone-IA-sauvegarde-${today()}${prot.checked ? '-protegee' : ''}.json`;
-          const res = await shareOrDownload([new File([text], name, { type: 'application/json' })], 'Sauvegarde Dictaphone IA');
+          const name = `ADE-CI-Notes-sauvegarde-${today()}${prot.checked ? '-protegee' : ''}.json`;
+          const res = await shareOrDownload([new File([text], name, { type: 'application/json' })], 'Sauvegarde ADE-CI Notes');
           if (res !== 'annule') { B.markBackupDone(); toast('Sauvegarde créée'); close(); render(); } else { go_.disabled = false; go_.textContent = 'Créer la sauvegarde'; }
         } catch (err) { toast('Échec : ' + err.message, 5000); go_.disabled = false; go_.textContent = 'Créer la sauvegarde'; }
       });
@@ -251,7 +251,7 @@ export async function settingsView({ query }) {
       group('À propos',
         h('div', { class: 'card' },
           h('div', { class: 'kv' }, h('span', { text: 'Version' }), h('span', { text: APP_VERSION })),
-          h('p', { class: 'hint', text: 'Dictaphone IA, développé pour Ade-ci Family Office. Polices Abhaya Libre (titres) et Open Sans (textes), licence SIL OFL.' }))),
+          h('p', { class: 'hint', text: 'ADE-CI Notes, développé pour Ade-ci Family Office. Polices Abhaya Libre (titres) et Open Sans (textes), licence SIL OFL.' }))),
       h('div', { style: { height: '12px' } }));
     drawStorage();
   };

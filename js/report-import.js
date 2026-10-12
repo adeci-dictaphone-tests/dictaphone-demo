@@ -126,24 +126,111 @@ function headingOf(raw, keys, used) {
   return null;
 }
 
+// ---------- Texte « aplati » (retours à la ligne perdus au collage) ----------
+// Retrouve les titres de la trame au milieu d'une ligne (« Maj du 261012 Patrimoine : - … Financier : - … ») et remet des lignes.
+// Prudence : seuls les titres EXACTS de la trame (ou leurs formulations proches), écrits avec une majuscule et suivis de deux-points,
+// sont retenus ; « les actions : » ou « sa situation : » dans une phrase ne coupent rien. Les parties retrouvées sont marquées pour vérification.
+const STOP = new Set(['le', 'la', 'les', 'des', 'de', 'du', 'd', 'un', 'une', 'ces', 'vos', 'nos', 'aux', 'au', 'sur', 'en', 'dans', 'par', 'pour', 'ses', 'leurs', 'mes', 'mon', 'ma', 'ton', 'ta', 'sa', 'son', 'notre', 'votre', 'leur', 'cette', 'cet', 'ce', 'et', 'ou', 'a', 'sans', 'avec']);
+const BUL = '[-–•*]';
+const foldLen = (s) => { let o = ''; for (let i = 0; i < s.length; i++) { const c = s[i]; const d = c.normalize('NFD'); const b = d.length > 1 ? d[0] : c; const l = b.toLowerCase(); o += l.length === 1 ? l : b; } return o; };
+const rxEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const RX_TRAIL_BUL = new RegExp('\\s+' + BUL + '\\s*$');
+const RX_LEAD_BUL = new RegExp('^' + BUL + '\\s+');
+const RX_SPLIT_BUL = new RegExp('(?<!\\d)\\s+' + BUL + '\\s+|\\s+' + BUL + '\\s+(?!\\d)');   // pas de coupure entre deux chiffres (« 2026 - 2027 »)
+function splitBullets(body) {
+  let b = body.replace(RX_TRAIL_BUL, '').trim();
+  const lead = RX_LEAD_BUL.test(b);
+  b = b.replace(RX_LEAD_BUL, '');
+  const parts = b.split(RX_SPLIT_BUL).map((x) => x.trim()).filter(Boolean);
+  return lead || parts.length > 1 ? parts.map((x) => '- ' + x) : (b ? [b] : []);
+}
+function reflowLine(line, rx, needColon = true) {
+  const f = foldLen(line);
+  const cuts = [];
+  for (const m of f.matchAll(rx)) {
+    const start = m.index + m[1].length;
+    if (!/\p{Lu}/u.test(line[start] || '')) continue;
+    const before = line.slice(0, start);
+    if (before.replace(/[\s\-–•*]+/g, '') === '') continue;                    // déjà en début de ligne (ou derrière une puce)
+    const w = /([\p{L}']+)[\s\-–•*:]*$/u.exec(foldLen(before));
+    if (w && STOP.has(w[1].replace(/'$/, ''))) continue;                       // « les Actions : » dans une phrase
+    cuts.push({ start, end: start + m[2].length });
+  }
+  if (!cuts.length) return null;
+  const out = [];
+  const pre = line.slice(0, cuts[0].start).replace(RX_TRAIL_BUL, '').trim();
+  if (pre) out.push({ t: pre, inline: false });
+  cuts.forEach((c, i) => {
+    const title = line.slice(c.start, c.end).trim();
+    const bodyEnd = i + 1 < cuts.length ? cuts[i + 1].start : line.length;
+    const body = line.slice(c.end, bodyEnd).replace(/^\s*[:：]\s*/, '');
+    const items = splitBullets(body);
+    if (items.length === 1 && !items[0].startsWith('- ')) out.push({ t: `${title} : ${items[0]}`, inline: true });
+    else { out.push({ t: `${title} :`, inline: true }); items.forEach((x) => out.push({ t: x, inline: false })); }
+  });
+  return out;
+}
+function titleRegex(tsec, colon) {
+  const alts = new Set();
+  for (const s of tsec) {
+    const ft = foldLen(s.title.trim());
+    alts.add(rxEsc(ft).replace(/\s+/g, '\\s+'));
+    const al = ALIASES[normTitle(s.title)];
+    if (al) al.forEach((a) => alts.add(rxEsc(a).replace(/ /g, "[\\s'’\\-]+")));
+  }
+  const list = [...alts].filter(Boolean).sort((a, b) => b.length - a.length);
+  if (!list.length) return null;
+  return new RegExp('(^|[\\s(\\[\\-–•*])(' + list.join('|') + ')' + (colon ? '\\s*[:：]' : '(?![\\p{L}\\p{N}])'), 'gu');
+}
+// Retourne les lignes (éventuellement redécoupées) : [{ t, inline }]
+export function reflow(lines, tsec) {
+  const asIs = lines.map((t) => ({ t, inline: false }));
+  if (!tsec || !tsec.length) return { lines: asIs, reflowed: 0 };
+  const rx = titleRegex(tsec, true);
+  let n = 0; const out = [];
+  for (const ln of lines) {
+    const r = rx && ln.length > 8 ? reflowLine(ln, rx) : null;
+    if (r) { n += r.filter((x) => x.inline).length; out.push(...r); } else out.push({ t: ln, inline: false });
+  }
+  // Texte entièrement aplati et sans deux-points : on accepte seulement une suite d'au moins 3 titres de rubriques, dans l'ordre de la trame
+  const flat = lines.filter((l) => l.trim()).length <= 2 && lines.join(' ').length > 150;
+  if (n < 2 && flat) {
+    const rx2 = titleRegex(tsec.filter((s) => s.level !== 2), false);
+    const text = lines.join(' ');
+    const f = foldLen(text); const hits = [];
+    if (rx2) for (const m of f.matchAll(rx2)) { const st = m.index + m[1].length; if (/\p{Lu}/u.test(text[st] || '')) hits.push({ start: st, end: st + m[2].length }); }
+    const order = tsec.filter((s) => s.level !== 2).map((s) => foldLen(s.title.trim()));
+    let last = -1, ok = 0;
+    for (const h of hits) { const i = order.findIndex((o, k) => k > last && f.slice(h.start, h.end).replace(/\s+/g, ' ') === o); if (i >= 0) { last = i; ok++; } }
+    if (ok >= 3) {
+      const res = []; const pre = text.slice(0, hits[0].start).trim(); if (pre) res.push({ t: pre, inline: false });
+      hits.forEach((h, i) => { const body = text.slice(h.end, i + 1 < hits.length ? hits[i + 1].start : text.length).trim(); const items = splitBullets(body); res.push({ t: text.slice(h.start, h.end) + ' :', inline: true }); items.forEach((x) => res.push({ t: x, inline: false })); });
+      return { lines: res, reflowed: hits.length, noColon: true };
+    }
+  }
+  return { lines: out, reflowed: n };
+}
+
 // Analyse : retourne { raw, preamble, blocks: [{title, level, content, match:{idx,how}|null, kind}], found }
 export function parseReport(text, templateSections = []) {
   const raw = String(text || '').replace(/\r\n?/g, '\n');
   const keys = templateSections.map((s) => normTitle(s.title));
-  const lines = tablesToBullets(raw).split('\n');
+  const rf = reflow(tablesToBullets(raw).split('\n'), templateSections);
   const used = new Set();
   const blocks = []; const pre = [];
   let cur = null;
-  for (const ln of lines) {
+  for (const { t: ln, inline } of rf.lines) {
     const hd = headingOf(ln, keys, used);
     if (hd) {
       if (hd.match) used.add(hd.match.idx);
-      cur = { title: hd.match ? templateSections[hd.match.idx].title : hd.title, detected: hd.title, match: hd.match, kind: hd.kind, lines: hd.rest ? [hd.rest] : [] };
+      cur = { title: hd.match ? templateSections[hd.match.idx].title : hd.title, detected: hd.title, match: hd.match, kind: hd.kind, inline, lines: hd.rest ? [hd.rest] : [] };
       blocks.push(cur);
     } else (cur ? cur.lines : pre).push(ln);
   }
-  const out = blocks.map((b) => ({ title: b.title, detected: b.detected, level: b.match ? (templateSections[b.match.idx].level === 2 ? 2 : 1) : 1, kind: b.kind, match: b.match, content: cleanContent(b.lines) }));
-  return { raw, preamble: cleanContent(pre), blocks: out, found: out.filter((b) => b.match).length };
+  const out = blocks.map((b) => ({ title: b.title, detected: b.detected, level: b.match ? (templateSections[b.match.idx].level === 2 ? 2 : 1) : 1, kind: b.kind, inline: !!b.inline, match: b.match, content: cleanContent(b.lines) }));
+  const topTitles = templateSections.filter((s) => s.level !== 2);
+  const missing = templateSections.filter((s, i) => !out.some((b) => b.match && b.match.idx === i)).map((s) => s.title);
+  return { raw, preamble: cleanContent(pre), blocks: out, found: out.filter((b) => b.match).length, reflowed: rf.reflowed, noColon: !!rf.noColon, missing, nTop: topTitles.length };
 }
 
 // Construit les rubriques du compte rendu à partir de l'analyse et du choix de l'utilisateur.

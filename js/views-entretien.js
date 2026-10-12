@@ -305,7 +305,7 @@ export async function ficheView({ params, query }) {
       };
       const pdfBtn = h('button', { class: tooLongForBody ? 'btn primary' : 'btn', onclick: () => { close(); sharePdf(prepared); } }, icon('doc'), h('span', { text: 'Joindre le PDF (menu de partage)' }));
       body.append(
-        h('div', { class: 'banner warn', style: { marginTop: '0' } }, icon('shield'), h('div', { text: 'Envoyez les documents confidentiels uniquement depuis une messagerie professionnelle autorisée par Ade-ci. Dictaphone IA n\'envoie rien lui-même : votre messagerie s\'ouvre avec le message prêt, et rien ne part sans votre validation.' })),
+        h('div', { class: 'banner warn', style: { marginTop: '0' } }, icon('shield'), h('div', { text: 'Envoyez les documents confidentiels uniquement depuis une messagerie professionnelle autorisée par Ade-ci. ADE-CI Notes n\'envoie rien lui-même : votre messagerie s\'ouvre avec le message prêt, et rien ne part sans votre validation.' })),
         h('label', { class: 'lbl', text: 'Destinataire (facultatif ici, modifiable dans la messagerie)' }), to,
         h('label', { class: 'lbl', text: 'Objet' }), subj,
         h('label', { class: 'lbl', text: 'Message (relisez et modifiez avant l\'ouverture)' }), msg, longNote,
@@ -891,6 +891,11 @@ export async function ficheView({ params, query }) {
           ? 'Aucun titre de rubrique détecté dans ce texte. Il sera conservé en entier dans « Introduction » : vous pourrez le déplacer ou le découper ensuite.'
           : `${nDet} partie${nDet > 1 ? 's' : ''} détectée${nDet > 1 ? 's' : ''}, dont ${nOk} reconnue${nOk > 1 ? 's' : ''} d'après la trame${tpl ? ' « ' + tpl.name + ' »' : ''}. Vérifiez la correspondance de chacune avant d'importer ; vous pourrez tout modifier ensuite.` }));
         if (sp.preamble) b.append(h('div', { class: 'banner', style: { marginTop: 0 } }, icon('info'), h('div', { text: 'Le texte placé avant la première rubrique est conservé dans une rubrique « Introduction ».' })));
+        // Texte aplati ou rubriques manquantes : la répartition proposée n'est pas certaine, l'utilisateur doit la valider explicitement
+        const needCheck = nDet > 0 && (sp.reflowed > 0 || sp.noColon || (tpl && sp.missing.length > 0));
+        if (sp.reflowed) b.append(h('div', { class: 'banner warn', style: { marginTop: '8px' } }, icon('info'), h('div', { text: `Le texte collé ne contenait plus (ou presque plus) de retours à la ligne : ${sp.reflowed} titre${sp.reflowed > 1 ? 's' : ''} retrouvé${sp.reflowed > 1 ? 's' : ''} dans le fil du texte, listes à puces reconstituées. Le texte original reste conservé tel quel.` })));
+        if (nDet && tpl && sp.missing.length) b.append(h('p', { class: 'hint', text: 'Rubriques de la trame non retrouvées : ' + sp.missing.join(', ') + '. Elles resteront vides ; vous pouvez déplacer une partie vers l\'une d\'elles avec les listes ci-dessous.' }));
+        const chk = needCheck ? h('input', { type: 'checkbox' }) : null;
         const used = () => { const c = {}; Object.values(mapping).forEach((m) => { c[m] = (c[m] || 0) + 1; }); return c; };
         const dupNote = h('p', { class: 'hint', style: { color: 'var(--warn, #9a6700)' } });
         const refreshDup = () => { const c = used(); const n = Object.entries(c).filter(([m, k]) => m.startsWith('t:') && k > 1).length; dupNote.textContent = n ? 'Plusieurs parties vont dans la même rubrique : leur texte sera mis à la suite.' : ''; };
@@ -903,19 +908,23 @@ export async function ficheView({ params, query }) {
           sel.addEventListener('change', () => { mapping[i] = sel.value; refreshDup(); });
           const firstLine = (blk.content.split('\n').find((l) => l.trim()) || '').slice(0, 110);
           b.append(h('div', { class: 'card', style: { marginTop: '8px' } },
-            h('div', { style: { fontWeight: '600', color: 'var(--ink)' }, text: blk.detected + (blk.match ? (blk.match.how === 'exact' ? '  ✓' : '  ≈ reconnue') : '  ? non reconnue') }),
+            h('div', { style: { fontWeight: '600', color: 'var(--ink)' }, text: blk.detected + (blk.match ? (blk.match.how === 'exact' ? '  ✓' : '  ≈ reconnue') : '  ? non reconnue') + (blk.inline ? ' · retrouvée dans le fil du texte' : '') }),
             h('div', { class: 'hint', style: { margin: '2px 0 6px' }, text: `${blk.content.length.toLocaleString('fr-FR')} caractères${firstLine ? ' · ' + firstLine : ''}` }), sel));
         });
         b.append(dupNote);
         if (S.hasReport(e)) b.append(h('p', { class: 'hint', text: 'Le compte rendu actuel est conservé dans « Compte rendu précédent » (rétablissement possible).' }));
         b.append(h('details', { class: 'evid' }, h('summary', { text: 'Texte reçu de ChatGPT (conservé tel quel dans la fiche)' }), h('pre', { class: 'pview doc', style: { whiteSpace: 'pre-wrap' }, text: sp.raw })));
-        b.append(h('div', { class: 'sheet-actions' },
-          h('button', { class: 'btn primary', text: 'Importer dans la fiche', onclick: async () => {
+        const okBtn = h('button', { class: 'btn primary', text: 'Importer dans la fiche', disabled: !!chk, onclick: async () => {
             if (S.hasReport(e)) e.reportHistory = S.pushHistory(e.reportHistory, { text: JSON.stringify(e.reportSections || []), reason: 'avant import ChatGPT' });
             const secs = nDet ? buildSections(sp, tsec, mapping, S.uid) : [{ id: S.uid('r'), title: 'Introduction', content: sp.preamble || sp.raw.trim() }, ...tsec.map((ts) => ({ id: S.uid('r'), title: ts.title, content: '', ...(ts.level === 2 ? { level: 2 } : {}) }))];
             e.reportSections = secs; e.reportRaw = sp.raw; e.reportRawAt = Date.now(); e.namesRestored = false; delete e.iaInfo;
             edit(); await saver.flush(); close(); toast('Compte rendu importé'); refresh();
-          } }), h('button', { class: 'btn', text: 'Annuler', onclick: close })));
+        } });
+        if (chk) {
+          chk.addEventListener('change', () => { okBtn.disabled = !chk.checked; });
+          b.append(h('label', { class: 'check' }, chk, h('span', { text: 'J\'ai vérifié la répartition proposée ci-dessus (titres retrouvés dans le fil du texte ou rubriques manquantes).' })));
+        }
+        b.append(h('div', { class: 'sheet-actions' }, okBtn, h('button', { class: 'btn', text: 'Annuler', onclick: close })));
       } });
     } }, icon('check'), h('span', { text: 'Importer dans les rubriques' }));
     const restoreBtn = h('button', { class: 'btn small', onclick: () => restoreNamesFlow(refresh) }, icon('user'), h('span', { text: 'Remettre les vrais noms (facultatif)' }));

@@ -36,7 +36,7 @@ for (const [id, href, ic, label] of TABS) {
 }
 // Ordinateur : la barre du bas devient un menu à gauche, avec la marque et le rappel de sauvegarde
 const tabWrap = tabbar.parentElement;
-tabWrap.prepend(h('div', { class: 'side-brand' }, h('img', { src: 'img/emblem-tile.png', alt: '', width: 44, height: 44 }), h('div', {}, h('div', { class: 'name', text: 'Dictaphone IA' }), h('div', { class: 'sub', text: 'Ade-ci Family Office' }))));
+tabWrap.prepend(h('div', { class: 'side-brand' }, h('img', { src: 'img/emblem-tile.png', alt: '', width: 44, height: 44 }), h('div', {}, h('div', { class: 'name', text: 'ADE-CI Notes' }), h('div', { class: 'sub', text: 'Ade-ci Family Office' }))));
 const sideFoot = h('div', { class: 'side-foot' });
 tabWrap.append(sideFoot);
 const refreshFoot = () => { const last = lastBackupAt(); sideFoot.replaceChildren(icon('shield'), h('br'), last ? 'Dernière sauvegarde' : 'Aucune sauvegarde', last ? h('b', { text: backupAgo(last) }) : h('b', { text: 'à faire dans Réglages' })); };

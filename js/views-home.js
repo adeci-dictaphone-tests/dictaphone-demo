@@ -38,7 +38,7 @@ export async function homeView() {
   const el = h('div', { class: 'view home' },
     h('div', { class: 'brand' },
       h('img', { src: 'img/emblem-tile.png', alt: '', width: 46, height: 46 }),
-      h('div', {}, h('div', { class: 'name', text: 'Dictaphone IA' }), h('div', { class: 'sub', text: 'Ade-ci Family Office' })),
+      h('div', {}, h('div', { class: 'name', text: 'ADE-CI Notes' }), h('div', { class: 'sub', text: 'Ade-ci Family Office' })),
       h('div', { class: 'date' }, h('div', { text: cap(now.toLocaleDateString('fr-FR', { weekday: 'long' })) }), h('div', { text: now.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) }))),
 
     vaultSlot,

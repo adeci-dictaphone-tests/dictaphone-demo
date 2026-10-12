@@ -61,7 +61,7 @@ $('bBio').onclick = async () => {
     if (!plat) throw new Error('Pas d\'authentificateur de plateforme (Face ID / Touch ID).');
     const rnd = (n) => crypto.getRandomValues(new Uint8Array(n));
     log('Création de l\'identifiant (Face ID demandé)…');
-    const cred = await navigator.credentials.create({ publicKey: { rp: { name: 'Dictaphone IA démo' }, user: { id: rnd(16), name: 'demo', displayName: 'Démo' }, challenge: rnd(32),
+    const cred = await navigator.credentials.create({ publicKey: { rp: { name: 'ADE-CI Notes démo' }, user: { id: rnd(16), name: 'demo', displayName: 'Démo' }, challenge: rnd(32),
       pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
       authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, extensions: { prf: {} } } });
     const ext = cred.getClientExtensionResults();

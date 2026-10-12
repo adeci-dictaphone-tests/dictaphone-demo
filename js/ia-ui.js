@@ -123,7 +123,7 @@ export function iaSection() {
   drawSel(); refreshSub(); sync();
 
   body.append(
-    h('p', { class: 'hint', style: { marginTop: 0 }, text: 'Dictaphone IA rédige le compte rendu à partir de la transcription et de la trame choisie. Tout reste sur votre appareil : aucune transcription n\'est envoyée sur Internet, aucun abonnement, aucun coût.' }),
+    h('p', { class: 'hint', style: { marginTop: 0 }, text: 'ADE-CI Notes rédige le compte rendu à partir de la transcription et de la trame choisie. Tout reste sur votre appareil : aucune transcription n\'est envoyée sur Internet, aucun abonnement, aucun coût.' }),
     selBox, panel,
     h('p', { style: { margin: '16px 0 4px', fontWeight: 600, color: 'var(--ink)' }, text: 'Ce qui reste vrai' }),
     h('ul', { class: 'plain' },

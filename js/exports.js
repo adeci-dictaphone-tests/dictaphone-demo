@@ -89,7 +89,7 @@ export async function docPdfFile(e, folders, templateName, kind = 'report') {
 }
 export const reportPdfFile = (e, folders, templateName) => docPdfFile(e, folders, templateName, 'report');
 // Envoi par mail : on prépare un lien « mailto: » ; la messagerie de l'appareil s'ouvre avec le message prêt.
-// Rien n'est envoyé par Dictaphone IA : l'utilisateur relit puis envoie lui-même depuis Mail, Outlook, etc.
+// Rien n'est envoyé par ADE-CI Notes : l'utilisateur relit puis envoie lui-même depuis Mail, Outlook, etc.
 export const validEmail = (a) => /^[^\s@<>(),;]+@[^\s@<>(),;]+\.[^\s@<>(),;]{2,}$/.test(a);
 export const splitAddresses = (s) => s.split(/[;,\s]+/).map((x) => x.trim()).filter(Boolean);
 export function mailtoHref({ to, subject, body }) {

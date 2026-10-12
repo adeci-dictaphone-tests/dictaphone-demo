@@ -38,10 +38,10 @@ export function lockScreen() {
     const pw = h('input', { class: 'field', type: 'password', placeholder: 'Mot de passe', autocomplete: 'current-password', autocapitalize: 'none', 'aria-label': 'Mot de passe', enterkeyhint: 'go' });
     const go = h('button', { class: 'btn primary', type: 'button' }, icon('check'), h('span', { text: 'Déverrouiller' }));
     const bioBtn = V.biometricEnabled() ? h('button', { class: 'btn', type: 'button', style: { marginTop: '10px' }, onclick: async () => { msg.textContent = ''; try { await V.unlockBiometric(); overlay.remove(); document.body.classList.remove('noscroll'); resolve(); } catch (e) { msg.textContent = e.message; } } }, icon('user'), h('span', { text: 'Déverrouiller avec Face ID' })) : null;
-    const overlay = h('div', { class: 'lockscreen', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Dictaphone IA verrouillé' },
+    const overlay = h('div', { class: 'lockscreen', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'ADE-CI Notes verrouillé' },
       h('div', { class: 'lock-box' },
         h('img', { src: 'img/emblem-tile.png', alt: '', width: 72, height: 72, style: { borderRadius: '18px' } }),
-        h('h1', { class: 'serif', style: { fontSize: '28px', margin: '14px 0 4px' }, text: 'Dictaphone IA est verrouillé' }),
+        h('h1', { class: 'serif', style: { fontSize: '28px', margin: '14px 0 4px' }, text: 'ADE-CI Notes est verrouillé' }),
         spaceName() ? h('p', { class: 'hint', style: { fontWeight: '600', color: 'var(--ink)' }, text: 'Espace : ' + spaceName() }) : null,
         h('p', { class: 'hint', text: 'Vos fiches sont chiffrées sur cet appareil. Saisissez votre mot de passe.' }),
         pw, h('div', { style: { height: '10px' } }), go, bioBtn, msg,
@@ -154,7 +154,7 @@ function showRecoveryKey(key, onDone) {
       h('div', { class: 'reckey', text: key }),
       h('div', { class: 'btn-row' },
         h('button', { class: 'btn small', onclick: async () => { toast((await copyText(key)) ? 'Clé copiée' : 'Copie impossible'); } }, icon('copy'), h('span', { text: 'Copier' })),
-        h('button', { class: 'btn small', onclick: () => { const w = window.open('', '_blank'); if (w) { w.document.write('<pre style="font:24px monospace;padding:40px">Dictaphone IA — clé de récupération\n\n' + key + '\n\nÀ conserver hors de l\'appareil.</pre>'); w.document.close(); w.print(); } } }, icon('doc'), h('span', { text: 'Imprimer' }))),
+        h('button', { class: 'btn small', onclick: () => { const w = window.open('', '_blank'); if (w) { w.document.write('<pre style="font:24px monospace;padding:40px">ADE-CI Notes — clé de récupération\n\n' + key + '\n\nÀ conserver hors de l\'appareil.</pre>'); w.document.close(); w.print(); } } }, icon('doc'), h('span', { text: 'Imprimer' }))),
       h('div', { class: 'sheet-actions' }, h('button', { class: 'btn primary', text: 'J\'ai noté la clé', onclick: () => { close(); if (onDone) onDone(); } })));
   } });
 }
@@ -257,7 +257,7 @@ function wizard({ refresh }) {
           const back = JSON.parse(await B.decryptEnvelope(JSON.parse(text), st.password));      // relecture à blanc
           const n = JSON.parse(data);
           if (back.sessions.length !== n.sessions.length || back.folders.length !== n.folders.length || (back.originals || []).length !== (n.originals || []).length) throw new Error('vérification impossible');
-          const res = await shareOrDownload([new File([text], `Dictaphone-IA-sauvegarde-avant-coffre-${new Date().toISOString().slice(0, 10)}.json`, { type: 'application/json' })], 'Sauvegarde Dictaphone IA');
+          const res = await shareOrDownload([new File([text], `ADE-CI-Notes-sauvegarde-avant-coffre-${new Date().toISOString().slice(0, 10)}.json`, { type: 'application/json' })], 'Sauvegarde ADE-CI Notes');
           if (res === 'annule') { state.textContent = 'Sauvegarde annulée.'; mk.disabled = false; return; }
           B.markBackupDone(); state.textContent = `Sauvegarde vérifiée : ${n.sessions.length} fiche(s), ${n.folders.length} dossier(s) relus avec succès. Elle s'ouvre avec le mot de passe que vous venez de choisir.`;
         } catch (e) { state.textContent = 'Échec : ' + e.message; mk.disabled = false; }

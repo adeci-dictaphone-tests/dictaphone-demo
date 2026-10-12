@@ -9,4 +9,4 @@ Traitement : communes et arrondissements municipaux (types COM et ARM), noms ave
 tirets remplacés par des espaces, noms de moins de 4 caractères exclus. Aucune autre donnée n'est utilisée.
 La liste est utilisée localement, sans envoi de texte à un service extérieur. Un nom de commune n'est retenu que dans un contexte de lieu
 (voir js/protect/engine.js) : « Orange », « Lourdes » ou un nom de famille ne sont pas masqués sans indice.
-Attribution : « Source : Insee, Code officiel géographique, traitement par Dictaphone IA ».
+Attribution : « Source : Insee, Code officiel géographique, traitement par ADE-CI Notes ».

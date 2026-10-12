@@ -225,7 +225,7 @@ export async function makePdf({ kind = 'Compte rendu', title, rows = [], section
     obj(cn, `<< /Length ${enc.encode(stream).length} >>\nstream\n${stream}\nendstream`);
   });
   const utf16 = (s) => '<FEFF' + [...s].map((c) => c.codePointAt(0).toString(16).padStart(4, '0')).join('') + '>';
-  obj(infoN, `<< /Title ${utf16(title)} /Author ${utf16(brand)} /Producer ${utf16('Dictaphone IA')} /Creator ${utf16('Dictaphone IA')} >>`);
+  obj(infoN, `<< /Title ${utf16(title)} /Author ${utf16(brand)} /Producer ${utf16('ADE-CI Notes')} /Creator ${utf16('ADE-CI Notes')} >>`);
   const xref = offset;
   let x = `xref\n0 ${infoN + 1}\n0000000000 65535 f \n`;
   for (let n = 1; n <= infoN; n++) x += String(offsets[n]).padStart(10, '0') + ' 00000 n \n';

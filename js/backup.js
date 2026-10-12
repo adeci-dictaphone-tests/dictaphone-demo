@@ -147,11 +147,11 @@ export const markBackupDone = () => { try { localStorage.setItem(LAST_KEY, Strin
 // ---------- Lecture et vérification ----------
 export function parseFile(text) {
   let obj;
-  try { obj = JSON.parse(text); } catch { throw new Error('Ce fichier n\'est pas une sauvegarde Dictaphone IA (lecture impossible).'); }
+  try { obj = JSON.parse(text); } catch { throw new Error('Ce fichier n\'est pas une sauvegarde ADE-CI Notes (lecture impossible).'); }
   if (!obj || typeof obj !== 'object') throw new Error('Fichier non reconnu.');
   if (obj.format === FORMAT_ENC) return { encrypted: true, obj };
   if (obj.format === FORMAT) return { encrypted: false, obj };
-  throw new Error('Ce fichier n\'est pas une sauvegarde Dictaphone IA.');
+  throw new Error('Ce fichier n\'est pas une sauvegarde ADE-CI Notes.');
 }
 
 const str = (v, max = 200000) => (typeof v === 'string' ? v.slice(0, max) : '');

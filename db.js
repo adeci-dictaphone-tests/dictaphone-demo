@@ -26,7 +26,7 @@ function open() {
       r.result.onversionchange = () => { r.result.close(); dbPromise = null; };
       resolve(r.result);
     };
-    r.onblocked = () => { clearTimeout(guard); reject(new Error('Base verrouillée par un autre onglet : fermez les autres fenêtres Dictaphone IA puis rechargez.')); };
+    r.onblocked = () => { clearTimeout(guard); reject(new Error('Base verrouillée par un autre onglet : fermez les autres fenêtres ADE-CI Notes puis rechargez.')); };
     r.onerror = () => { clearTimeout(guard); reject(r.error); };
   });
 }

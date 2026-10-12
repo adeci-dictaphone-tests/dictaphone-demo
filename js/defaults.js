@@ -20,10 +20,10 @@ export const DEFAULT_TEMPLATES = [
     // Trame de suivi patrimonial en six rubriques (sous-rubriques en retrait). Pas de « Non évoqué » : une rubrique sans information reste vide.
     id: 'tpl-clients-v2', category: 'clients', name: 'Entretien client', builtin: true, isDefault: true,
     sections: [
-      sec('Patrimoine', 'Vue d\'ensemble du patrimoine, par grandes familles. Le détail va dans les sous-rubriques ci-dessous.'),
-      sec('Financier', 'Placements financiers : enveloppes (PEA, assurance-vie, CTO, PER…), montants, valorisations, établissements, supports.', 2),
-      sec('Immobilier', 'Biens immobiliers : nature, valeur, crédit en cours (capital restant dû, taux, mensualité, échéance), loyers, SCPI.', 2),
-      sec('Professionnel / épargne salariale et retraite', 'Entreprise ou activité, détention de titres, épargne salariale (PEE, PERCOL), retraite (PER, régimes).', 2),
+      sec('Patrimoine', 'Titre seul : pas de résumé général quand les sous-rubriques détaillent déjà les actifs.'),
+      sec('Financier', 'Une puce par enveloppe ou placement, regroupant établissement, montant et répartition (ex. PEA 142 k€ : 70 % ETF World, 15 % Europe, solde émergents).', 2),
+      sec('Immobilier', 'Une puce par bien ou crédit : valeur, capital restant dû, taux, mensualité, échéance, loyer, SCPI.', 2),
+      sec('Professionnel / épargne salariale et retraite', 'Une puce par dispositif : entreprise ou activité, titres détenus, PEE, PERCOL, PER, retraite.', 2),
       sec('Situation', 'Situation familiale et professionnelle, revenus et fiscalité, contraintes et évolutions importantes.'),
       sec('Besoins', 'Objectifs exprimés, projets, contraintes et priorités.'),
       sec('Intérêts', 'Solutions envisagées, produits ou stratégies étudiés, pistes d\'arbitrage. Ce sont des pistes, pas des décisions.'),

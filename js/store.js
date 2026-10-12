@@ -280,6 +280,25 @@ export const hasExplicitHidden = () => Array.isArray(getSettings().hiddenTemplat
 export const visibleTemplates = (list, keepIds = []) => list.filter((t) => !isTemplateHidden(t.id) || keepIds.includes(t.id));
 export async function ensureDefaults() {
   const have = new Set((await DB.listTemplates()).map((t) => t.id));
+  // Consignes de la trame 0.8.2 remplacées par des consignes plus synthétiques : seulement si elles n'ont pas été modifiées par l'utilisateur
+  if (have.has('tpl-clients-v2')) {
+    const PREV = {
+      'Patrimoine': 'Vue d\'ensemble du patrimoine, par grandes familles. Le détail va dans les sous-rubriques ci-dessous.',
+      'Financier': 'Placements financiers : enveloppes (PEA, assurance-vie, CTO, PER…), montants, valorisations, établissements, supports.',
+      'Immobilier': 'Biens immobiliers : nature, valeur, crédit en cours (capital restant dû, taux, mensualité, échéance), loyers, SCPI.',
+      'Professionnel / épargne salariale et retraite': 'Entreprise ou activité, détention de titres, épargne salariale (PEE, PERCOL), retraite (PER, régimes).',
+    };
+    const cur = (await DB.listTemplates()).find((t) => t.id === 'tpl-clients-v2');
+    const dflt = DEFAULT_TEMPLATES.find((t) => t.id === 'tpl-clients-v2');
+    if (cur && dflt) {
+      let changed = false;
+      for (const s of cur.sections || []) {
+        const d = dflt.sections.find((x) => x.title === s.title);
+        if (d && PREV[s.title] && s.instruction === PREV[s.title] && d.instruction !== s.instruction) { s.instruction = d.instruction; changed = true; }
+      }
+      if (changed) await DB.putTemplate(cur);
+    }
+  }
   const addedV2 = !have.has('tpl-clients-v2');
   for (const d of DEFAULT_TEMPLATES) if (!have.has(d.id)) await DB.putTemplate(withIds(clone(d)));
   // Migration unique : la nouvelle trame « Entretien client » (six rubriques) devient la trame par défaut ; l'ancienne trame à neuf rubriques

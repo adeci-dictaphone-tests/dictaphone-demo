@@ -618,6 +618,7 @@ export function protect(text, options = {}) {
     if (act === 'keep' && s.decision !== 'keep') { s.decision = 'keep'; s.certainty = 'decided'; s.reason += ' — conservé sur votre décision'; }
     else if (act === 'mask' && s.decision === 'keep') {
       s.decision = 'mask'; s.certainty = 'decided'; s.reason += ' — masqué sur votre décision';
+      if (s.cat === 'PRODUIT') s.prod = true;
       s.cat = s.cat === 'ETABLISSEMENT' ? 'EMPLOYEUR' : (s.cat === 'PRODUIT' ? 'AUTRE' : s.cat); s.silent = false;
     } else if (act && s.certainty === 'maybe') s.certainty = 'decided';
   });
@@ -626,11 +627,33 @@ export function protect(text, options = {}) {
   const letters = (n) => { let s = ''; n++; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; };
   const counters = {}; const entities = [];
   const FAM = { PERSONNE: 'pers', EMPLOYEUR: 'ent', SOCIETE: 'soc', VILLE: 'ville', ETABLISSEMENT_LIEU: 'lieu', ADRESSE: 'adr', TELEPHONE: 'tel', EMAIL: 'mail', IBAN: 'iban', CARTE: 'carte', NIR: 'nir', SIREN: 'siren', PLAQUE: 'plaque', CONTRAT: 'contrat', AUTRE: 'autre' };
-  const LABEL = { ent: 'Entreprise', soc: 'Société', ville: 'Ville', lieu: 'Établissement', adr: 'Adresse', tel: 'Téléphone', mail: 'E-mail', iban: 'IBAN', carte: 'Carte', nir: 'Numéro de sécurité sociale', siren: 'Numéro SIREN', plaque: 'Plaque', contrat: 'Numéro de contrat', autre: 'Terme masqué' };
+  const LABEL = { ent: 'Entreprise', soc: 'Société', ville: 'Ville', lieu: 'Établissement', adr: 'Adresse', tel: 'Téléphone', mail: 'E-mail', iban: 'IBAN', carte: 'Carte', nir: 'Numéro de sécurité sociale', siren: 'Numéro SIREN', plaque: 'Plaque', contrat: 'Numéro de contrat', autre: 'Information masquée', prod: 'Produit' };
+  // Étiquettes lisibles : un terme masqué sans catégorie précise (« Terme masqué A ») devient « Ville A » s'il suit une préposition de lieu,
+  // « Produit A » s'il s'agit d'un produit masqué sur décision, sinon « Information masquée A ». Un article en majuscule qui fait partie
+  // du nom (« à La Baule ») est absorbé dans l'élément masqué : on ne laisse pas « La Ville A ».
+  const PLACE_PREP = /(?:^|[\s(,;:])(?:a|au|aux|en|dans|vers|pres de|autour de|sur|a cote de|proche de|region de|ville de)\s+$/;
+  const placeKeys = new Set();
+  for (const s of spans) {
+    if (s.decision !== 'mask') continue;
+    if (['AUTRE', 'VILLE', 'ETABLISSEMENT_LIEU'].includes(s.cat) && !s.prod) {
+      const win = text.slice(Math.max(0, s.start - 8), s.start);
+      const am = /(?:^|\s)(La|Le|Les|L['’])\s*$/.exec(win);
+      if (am) {
+        const artStart = Math.max(0, s.start - 8) + am.index + (am[0].length - am[0].trimStart().length);
+        const before = fold(text.slice(Math.max(0, artStart - 40), artStart));
+        const prevEnd = spans.reduce((m, x) => (x !== s && x.end <= artStart ? Math.max(m, x.end) : m), 0);
+        if ((PLACE_PREP.test(before) || /^\s*$/.test(before)) && artStart >= prevEnd) { s.start = artStart; s.text = text.slice(s.start, s.end); }
+      }
+    }
+    if (s.cat === 'AUTRE' && !s.prod) {
+      const b = fold(text.slice(Math.max(0, s.start - 30), s.start));
+      if (PLACE_PREP.test(b) || /(?:^|\s)(?:a|au|en|dans)\s+(?:la|le|les|l')\s*$/.test(b)) placeKeys.add(s.key || fold(s.text).replace(/\s+/g, ' ').trim());
+    }
+  }
   const stripTitle = (t) => fold(t).replace(/^(?:m\.|mme|mlle|monsieur|madame|mademoiselle|maitre|me|docteur|dr|professeur|pr)\s+/, '').trim();
   for (const s of spans) {
     if (s.decision === 'keep' || s.decision === 'generalize') continue;
-    const fam = FAM[s.cat] || 'autre';
+    const fam = (s.cat === 'AUTRE' ? (s.prod ? 'prod' : placeKeys.has(s.key || fold(s.text).replace(/\s+/g, ' ').trim()) ? 'ville' : 'autre') : FAM[s.cat]) || 'autre';
     const key = s.key || (fam === 'pers' ? stripTitle(s.text) : fold(s.text).replace(/\s+/g, ' ').trim());
     if (fam === 'pers') {
       const pk = s.person ? stripTitle(s.person.name) : stripTitle(s.text); const toks = pk.split(/\s+/).filter(Boolean);

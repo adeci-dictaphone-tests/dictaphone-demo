@@ -215,7 +215,7 @@ export async function enableBiometric() {
   if (!dek) throw new Error('Déverrouillez d\'abord avec le mot de passe.');
   if (!(await biometricSupported())) throw new Error('Face ID / Touch ID n\'est pas disponible ici.');
   const cred = await navigator.credentials.create({ publicKey: {
-    rp: { name: 'Dictaphone IA' }, user: { id: rnd(16), name: 'dictaphone-ia', displayName: 'Dictaphone IA' }, challenge: rnd(32),
+    rp: { name: 'ADE-CI Notes' }, user: { id: rnd(16), name: 'dictaphone-ia', displayName: 'ADE-CI Notes' }, challenge: rnd(32),
     pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
     authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
     timeout: 60000, extensions: { prf: {} } } });

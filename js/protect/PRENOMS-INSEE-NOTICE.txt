@@ -7,4 +7,4 @@ Téléchargé le 11/10/2026, empreinte SHA-256 du zip : C13B45E770C684B3C8531F28
 
 Traitement : somme des naissances par prénom (tous sexes, toutes années), prénoms de 1 000 naissances ou plus conservés (3 194 prénoms),
 mise en minuscules sans accents. Aucune autre donnée du fichier n'est utilisée. La liste est utilisée localement, sans envoi de texte à un service extérieur.
-Attribution : « Source : Insee, fichier des prénoms, traitement par Dictaphone IA ».
+Attribution : « Source : Insee, fichier des prénoms, traitement par ADE-CI Notes ».
