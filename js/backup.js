@@ -1,15 +1,16 @@
-// Sauvegarde et restauration. Une sauvegarde contient des données CONFIDENTIELLES (transcriptions, comptes rendus).
+// Sauvegarde et restauratirn. Une sauvegarde crntient des données CONFIDENTIELLES (transcriptions, comptes rendus).
 // Protection proposée : chiffrement AES-256-GCM avec un mot de passe (Web Crypto, local). Sans mot de passe, le fichier est lisible par tous.
 // La restauration n'écrase JAMAIS rien : un élément déjà présent est ignoré, ou ajouté sous forme de copie.
 import * as DB from '../db.js';
 import { kv } from './vault.js';
 import { CATEGORIES } from './defaults.js';
-import { listEntretiens, listFolders, listTemplates, uid, getVocab, setVocab, hasAudio } from './store.js';
+import { listEntretiens, listFolders, listTemplates, uid, getVocab, setVocab, hasAudio, getTombstones, addTombstones } from './store.js';
 
 export const FORMAT = 'dictaphone-ia-sauvegarde';
 export const FORMAT_ENC = 'dictaphone-ia-sauvegarde-chiffree';
-// Format versionné : 1 et 2 (anciennes sauvegardes) restent lisibles ; 3 ajoute les documents importés (« originals »).
-const VERSION = 3;
+// Format versionné : 1 et 2 (anciennes sauvegardes) restent lisibles ; 3 ajoute les documents importés (« originals ») ; 4 ajoute la corbeille,
+// l'original immuable de la transcription et les pierres tombales (éléments supprimés définitivement).
+const VERSION = 4;
 const ITER = 600000;
 const enc = new TextEncoder(), dec = new TextDecoder();
 const b64 = (buf) => { const a = new Uint8Array(buf); let s = ''; for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s); };
@@ -27,7 +28,7 @@ const readProtectGlobal = () => { try { return JSON.parse(kv.get(PROTECT_GLOBAL_
 export const MAX_ORIGINAL_BYTES = 40 * 1024 * 1024;      // par document
 export const MAX_ORIGINALS_TOTAL = 150 * 1024 * 1024;    // pour l'ensemble de la sauvegarde
 export async function estimateOriginals() {
-  const sessions = await listEntretiens();
+  const sessions = await listEntretiens({ all: true });
   let count = 0, bytes = 0, skipped = 0;
   for (const s of sessions) {
     if (s._unreadable) continue;
@@ -41,9 +42,10 @@ export async function estimateOriginals() {
 }
 // Inventaire complet de ce que contient l'appareil, et de ce qu'une sauvegarde transfère ou non (avant toute migration).
 export async function inventory() {
-  const [sessions, folders, templates] = await Promise.all([listEntretiens(), listFolders(), listTemplates()]);
+  const [sessions, folders, templates] = await Promise.all([listEntretiens({ all: true }), listFolders({ all: true }), listTemplates()]);
   const readable = sessions.filter((s) => !s._unreadable);
-  const out = { sessions: sessions.length, unreadable: sessions.length - readable.length, folders: folders.length, templates: templates.length, customTemplates: templates.filter((t) => !t.builtin).length,
+  const out = { trashedFiches: sessions.filter((s) => s.deletedAt).length, trashedFolders: folders.filter((f) => f.deletedAt).length, trashedParts: sessions.filter((s) => !s.deletedAt && s.trashed && Object.keys(s.trashed).length).length,
+    sessions: sessions.length, unreadable: sessions.length - readable.length, folders: folders.length, templates: templates.length, customTemplates: templates.filter((t) => !t.builtin).length,
     withTranscript: 0, withReport: 0, words: 0, protectSheets: 0, protectDecisions: 0, documents: 0, documentBytes: 0, audio: [], audioBytes: 0, audioSeconds: 0, orphanChunks: 0 };
   for (const s of readable) {
     const t = typeof s.transcript === 'string' ? s.transcript : (s.segments || []).map((g) => g.text).join('\n');
@@ -70,14 +72,17 @@ export async function inventory() {
   return out;
 }
 // withOriginals : inclure les documents importés (PDF, textes), encodés en base64 (+ 33 % de taille).
-export async function buildBackup(appVersion, { withProtect = false, withOriginals = false } = {}) {
-  const [sessions, folders, templates] = await Promise.all([listEntretiens(), listFolders(), listTemplates()]);
+export async function buildBackup(appVersion, { withProtect = false, withOriginals = false, withTrash = true } = {}) {
+  const [allS, allF, templates] = await Promise.all([listEntretiens({ all: true }), listFolders({ all: true }), listTemplates()]);
+  // sauvegarde COMPLÈTE par défaut : la corbeille est incluse (fiches, dossiers et éléments retirés), pour une restauration fidèle
+  const sessions = withTrash ? allS : allS.filter((e) => !e.deletedAt).map((e) => ({ ...e, trashed: {} }));
+  const folders = withTrash ? allF : allF.filter((f) => !f.deletedAt);
   const bad = sessions.filter((s) => s._unreadable).length + folders.filter((f) => f._unreadable).length;
   if (bad) throw new Error(`${bad} élément(s) chiffrés sont illisibles : la sauvegarde est refusée pour ne pas en produire une incomplète.`);
   const out = {
     format: FORMAT, version: VERSION, exportedAt: new Date().toISOString(), appVersion,
     note: 'Les fichiers audio ne sont pas inclus : exportez-les depuis la fiche de chaque entretien.',
-    folders, templates, vocab: getVocab(),
+    folders, templates, vocab: getVocab(), tombstones: getTombstones(), trashIncluded: !!withTrash,
     sessions: sessions.map((s) => { const x = { ...s, hadAudio: hasAudio(s) || !!s.hadAudio }; if (!withProtect) delete x.protect; return x; }),
   };
   if (withProtect) { const g = readProtectGlobal(); if (g) out.protectGlobal = g; }
@@ -162,6 +167,8 @@ export function sanitize(obj) {
   const folders = (Array.isArray(obj.folders) ? obj.folders : []).filter((f) => f && idOk(f.id)).map((f) => ({
     id: f.id, category: catOk(f.category) || 'clients', parentId: idOk(f.parentId) ? f.parentId : null,
     name: str(f.name, 200) || 'Dossier', createdAt: num(f.createdAt, Date.now()), lastOpened: 0,
+    ...(Number.isFinite(f.deletedAt) && f.deletedAt > 0 ? { deletedAt: f.deletedAt } : {}), ...(typeof f.trashGroup === 'string' && /^[\w-]{1,64}$/.test(f.trashGroup) ? { trashGroup: f.trashGroup } : {}),
+    ...(f.formerChildren && typeof f.formerChildren === 'object' ? { formerChildren: { folders: (Array.isArray(f.formerChildren.folders) ? f.formerChildren.folders : []).filter(idOk).slice(0, 2000), sessions: (Array.isArray(f.formerChildren.sessions) ? f.formerChildren.sessions : []).filter(idOk).slice(0, 5000) } } : {}),
   }));
   const templates = (Array.isArray(obj.templates) ? obj.templates : []).filter((t) => t && idOk(t.id) && Array.isArray(t.sections)).map((t) => ({
     id: t.id, category: catOk(t.category) || 'clients', name: str(t.name, 200) || 'Trame', builtin: !!t.builtin, isDefault: !!t.isDefault,
@@ -182,6 +189,8 @@ export function sanitize(obj) {
     bookmarks: [], createdAt: num(s.createdAt, Date.now()), updatedAt: num(s.updatedAt, Date.now()),
     durationSec: num(s.durationSec), hadAudio: !!s.hadAudio, nChunks: 0, doneChunks: 0, hasOriginal: false,
     ...(cleanProtect(s.protect) ? { protect: cleanProtect(s.protect) } : {}),
+    original: typeof s.original === 'string' ? s.original.slice(0, 3000000) : null, originalPresumed: !!s.originalPresumed, originalHistory: hist(s.originalHistory),
+    deletedAt: Number.isFinite(s.deletedAt) && s.deletedAt > 0 ? s.deletedAt : 0, trashGroup: typeof s.trashGroup === 'string' && /^[\w-]{1,64}$/.test(s.trashGroup) ? s.trashGroup : '', trashed: cleanTrashed(s.trashed),
   }));
   const vocab = (Array.isArray(obj.vocab) ? obj.vocab : []).filter((v) => v && typeof v.from === 'string' && typeof v.to === 'string').slice(0, 2000).map((v) => ({ from: v.from.slice(0, 100), to: v.to.slice(0, 100), ...(v.cs ? { cs: true } : {}) }));
   const protectGlobal = cleanProtectGlobal(obj.protectGlobal);
@@ -196,9 +205,18 @@ export function sanitize(obj) {
   }
   const withOrig = new Set(originals.map((o) => o.id));
   for (const s of sessions) if (withOrig.has(s.id)) s.hasOriginal = true;
-  return { folders, templates, sessions, vocab, protectGlobal, originals };
+  const tombstones = (Array.isArray(obj.tombstones) ? obj.tombstones : []).filter((t) => t && idOk(t.id)).slice(0, 5000).map((t) => ({ id: t.id, kind: ['fiche', 'dossier'].includes(t.kind) ? t.kind : 'fiche', at: num(t.at, Date.now()) }));
+  return { folders, templates, sessions, vocab, protectGlobal, originals, tombstones };
 }
 
+// Éléments retirés d'une fiche (document, audio, transcription corrigée) : structure validée.
+function cleanTrashed(t) {
+  const out = {}; if (!t || typeof t !== 'object') return out;
+  if (t.document && typeof t.document === 'object') out.document = { at: num(t.document.at, Date.now()), name: str(t.document.name, 200) };
+  if (t.audio && typeof t.audio === 'object') out.audio = { at: num(t.audio.at, Date.now()), nChunks: Math.max(0, Math.min(100000, num(t.audio.nChunks, 0))) };
+  if (t.transcript && typeof t.transcript === 'object' && typeof t.transcript.text === 'string') out.transcript = { at: num(t.transcript.at, Date.now()), text: t.transcript.text.slice(0, 3000000) };
+  return out;
+}
 // Fiche d'identité et décisions de pseudonymisation : structure validée, rien n'est exécuté ni inséré tel quel.
 const strList = (l, max = 200, len = 200) => (Array.isArray(l) ? l.slice(0, max).filter((x) => typeof x === 'string' && x.trim()).map((x) => x.slice(0, len)) : []);
 function cleanProtect(p) {
@@ -228,12 +246,18 @@ function cleanProtectGlobal(g) {
 }
 
 // ---------- Plan de restauration (aucune écriture) ----------
-export async function planRestore(clean) {
-  const [exS, exF, exT] = await Promise.all([listEntretiens(), listFolders(), listTemplates()]);
+// reviveDeleted : restaurer aussi les éléments supprimés DÉFINITIVEMENT depuis (pierres tombales). Par défaut, ils ne reviennent pas.
+export async function planRestore(clean, { reviveDeleted = false } = {}) {
+  const [exS, exF, exT] = await Promise.all([listEntretiens({ all: true }), listFolders({ all: true }), listTemplates()]);
+  const tomb = new Set(getTombstones().map((t) => t.id));
   const sById = new Map(exS.map((s) => [s.id, s])), fIds = new Set(exF.map((f) => f.id)), tById = new Map(exT.map((t) => [t.id, t]));
-  const plan = { addFolders: [], addTemplates: [], addSessions: [], copySessions: [], copyTemplates: [], skipped: 0, vocabAdd: [], audioMissing: 0, enrichProtect: [], protectGlobal: clean.protectGlobal || null, originalsAdd: [] };
+  const plan = { addFolders: [], addTemplates: [], addSessions: [], copySessions: [], copyTemplates: [], skipped: 0, vocabAdd: [], audioMissing: 0, enrichProtect: [], protectGlobal: clean.protectGlobal || null, originalsAdd: [], enrichOriginal: [], ignoredInTrash: 0, ignoredPurged: 0, tombstones: reviveDeleted ? [] : (clean.tombstones || []), trashedInBackup: 0 };
   const origBy = new Map((clean.originals || []).map((o) => [o.id, o]));
-  for (const f of clean.folders) { if (fIds.has(f.id)) plan.skipped++; else plan.addFolders.push(f); }
+  for (const f of clean.folders) {
+    if (fIds.has(f.id)) plan.skipped++;
+    else if (tomb.has(f.id) && !reviveDeleted) plan.ignoredPurged++;                 // supprimé définitivement ici : pas de résurrection silencieuse
+    else { plan.addFolders.push(f); if (f.deletedAt) plan.trashedInBackup++; }
+  }
   for (const t of clean.templates) {
     const ex = tById.get(t.id);
     if (!ex) plan.addTemplates.push(t);
@@ -243,9 +267,13 @@ export async function planRestore(clean) {
   for (const s of clean.sessions) {
     const ex = sById.get(s.id);
     const orig = origBy.get(s.id);
-    if (!ex) { plan.addSessions.push(s); if (orig) plan.originalsAdd.push({ ...orig }); }
+    if (!ex && tomb.has(s.id) && !reviveDeleted) { plan.ignoredPurged++; continue; }                // supprimée définitivement ici : elle ne revient pas
+    if (ex && ex.deletedAt && !s.deletedAt) { plan.ignoredInTrash++; continue; }                  // dans la corbeille de cet appareil : jamais ressuscitée ni dupliquée
+    if (!ex) { plan.addSessions.push(s); if (s.deletedAt) plan.trashedInBackup++; if (orig) plan.originalsAdd.push({ ...orig }); }
+    else if (ex.original === null && typeof s.original === 'string' && s.original.trim() && !ex.deletedAt) { plan.enrichOriginal.push({ id: s.id, original: s.original, presumed: !!s.originalPresumed }); plan.skipped++; }
     else if (s.protect && !ex.protect) { plan.enrichProtect.push({ id: s.id, protect: s.protect }); plan.skipped++; }   // la fiche existe : on lui ajoute seulement la protection manquante
     else if (ex.updatedAt === s.updatedAt) plan.skipped++;
+    else if (ex.deletedAt || s.deletedAt) plan.skipped++;                                         // pas de copie pour un élément en corbeille
     else { const nid = uid('e'); plan.copySessions.push({ ...s, id: nid, title: s.title + ' (copie restaurée)', name: s.title + ' (copie restaurée)' }); if (orig) plan.originalsAdd.push({ ...orig, id: nid }); }
     // fiche déjà présente sans document d'origine : le document de la sauvegarde lui est rattaché
     if (ex && orig && !ex.hasOriginal && !(await DB.rawGetOriginal(s.id))) plan.originalsAdd.push({ ...orig, attach: true });
@@ -271,6 +299,10 @@ export async function applyRestore(plan) {
     if (o.attach) { const cur = await DB.getSession(o.id); if (cur && !cur._unreadable) { cur.hasOriginal = true; await DB.putSession(cur); } }
   }
   if (plan.vocabAdd.length) setVocab([...getVocab(), ...plan.vocabAdd]);
+  // pierres tombales de la sauvegarde : fusionnées (un élément supprimé définitivement le reste)
+  if (plan.tombstones && plan.tombstones.length) addTombstones(plan.tombstones);
+  // original immuable : ajouté aux fiches existantes qui n'en ont pas, jamais écrasé
+  for (const en of plan.enrichOriginal || []) { const cur = await DB.getSession(en.id); if (cur && !cur._unreadable && (cur.original === null || cur.original === undefined)) { cur.original = en.original; cur.originalPresumed = en.presumed; await DB.putSession(cur); } }
   // fiche d'identité et décisions de pseudonymisation : ajoutées aux fiches existantes qui n'en ont pas, jamais écrasées
   for (const en of plan.enrichProtect || []) { const cur = await DB.getSession(en.id); if (cur && !cur.protect) { cur.protect = en.protect; await DB.putSession(cur); } }
   if (plan.protectGlobal) {

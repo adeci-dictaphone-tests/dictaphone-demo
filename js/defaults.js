@@ -49,6 +49,18 @@ export const DEFAULT_TEMPLATES = [
     ],
   },
   {
+    id: 'tpl-premier-rdv', category: 'clients', name: 'Premier rendez-vous client', builtin: true, isDefault: false,
+    sections: [
+      sec('Contexte et motif du rendez-vous', 'Contient : date, participants, origine de la prise de contact (recommandation, réseau, événement), motif et attentes exprimées. Ne contient pas : informations patrimoniales détaillées.'),
+      sec('Situation personnelle et familiale', 'Contient : situation familiale, régime matrimonial s\'il est cité, enfants et personnes à charge, projets familiaux. Ne retenir que ce qui a été dit.'),
+      sec('Situation professionnelle et revenus', 'Contient : activité, statut, ancienneté, revenus et leur évolution prévue, éventuelle détention d\'entreprise. Ne contient pas : patrimoine détenu.'),
+      sec('Patrimoine et engagements', 'Contient : actifs financiers, immobiliers et professionnels cités, crédits et charges, avec établissements, montants et dates seulement s\'ils sont dits. Indiquer « Non évoqué » pour ce qui manque.'),
+      sec('Objectifs, projets et horizon', 'Contient : objectifs exprimés (retraite, transmission, protection de la famille, investissement, fiscalité), priorités et échéances. Ne contient pas : solutions proposées.'),
+      sec('Profil de risque et préférences', 'Contient : attitude face au risque, expérience des placements, contraintes de liquidité, préférences exprimées. Ne rien déduire : écrire ce qui est dit.'),
+      sec('Points de vigilance et informations manquantes', 'Contient : contraintes, réserves, incohérences, pièces ou informations à obtenir. Ne contient pas : actions déjà listées.'),
+      sec('Pistes évoquées et prochaines étapes', 'Contient : pistes de travail évoquées (distinguer ce qui est une piste non décidée de ce qui est validé), documents à fournir, responsable et échéance seulement s\'ils sont dits, prochain rendez-vous.'),
+    ],
+  },  {
     id: 'tpl-suivi-patrimonial', category: 'clients', name: 'Suivi patrimonial — Family Office', builtin: true, isDefault: false,
     sections: [
       sec('Situation et actualités', 'Contient : situation familiale et professionnelle, événements récents (changement de poste, naissance, déménagement, vente, héritage), faits nouveaux depuis le dernier rendez-vous. Ne contient pas : montants de patrimoine, solutions, actions.'),

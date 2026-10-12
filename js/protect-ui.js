@@ -45,8 +45,34 @@ export function defaultProtect() {
 }
 const lines = (s) => s.split(/\n+/).map((x) => x.trim()).filter(Boolean);
 
+// Empreinte rapide d'un texte (détecte un changement ; pas une fonction de sécurité) : la revue humaine est liée au texte protégé relu.
+export const hashText = (s) => { let x = 2166136261; for (let i = 0; i < s.length; i++) { x ^= s.charCodeAt(i); x = Math.imul(x, 16777619); } return (x >>> 0).toString(16) + ':' + s.length; };
+
+// Analyse locale de la fiche (utilisée par l'étape « Corriger et protéger » ET par l'étape « ChatGPT » : un seul calcul, aucun envoi).
+export async function runProtect(e) {
+  if (!e.protect || typeof e.protect !== 'object') e.protect = defaultProtect();
+  const P = e.protect;
+  P.sheet = { ...defaultProtect().sheet, ...(P.sheet || {}) };
+  P.overrides = { byText: {}, byPos: {}, labels: {}, ...(P.overrides || {}) };
+  P.alwaysMask = P.alwaysMask || []; P.neverMask = P.neverMask || [];
+  const ctx = await loadEngine();
+  const g = readGlobal();
+  const extraGroups = {};
+  for (const d of g.dict || []) (extraGroups[d.role] = extraGroups[d.role] || []).push(d.name);
+  const dict = { groupes: [...ctx.dict.groupes, ...Object.entries(extraGroups).map(([role, noms]) => ({ role, employeurFrequent: role === 'emetteur_cote' || role === 'banque' || role === 'assureur', noms }))] };
+  const lexicon = ctx.lexMod.buildLexicon(dict);
+  const res = ctx.eng.protect(S.transcriptOf(e), { level: P.level, sheet: P.sheet, lexicon, extraFirstNames: ctx.names, communes: ctx.communes, alwaysMask: [...(P.alwaysMask || []), ...(g.always || [])], neverMask: [...(P.neverMask || []), ...(g.never || [])], overrides: P.overrides });
+  res.leaks = ctx.eng.leakCheck(res.protectedText, res.spans, P.sheet);
+  return { res, ctx };
+}
+// Table étiquette -> texte original (reste LOCALE : jamais copiée, jamais envoyée). Sert à la réintégration facultative des noms.
+export function labelTable(res) {
+  const m = new Map();
+  for (const s of res.spans) if (s.decision === 'mask' && s.label && !m.has(s.label)) m.set(s.label, s.person ? s.person.name : s.text.replace(/^(?:M\.|Mme|Mlle|Monsieur|Madame|Mademoiselle|Maître)\s+/i, ''));
+  return m;
+}
 // ---------------------------------------------------------------------
-export function protectTab({ e, templates, edit, saver }) {
+export function protectTab({ e, templates, edit, saver, parcours = false }) {
   if (!e.protect || typeof e.protect !== 'object') e.protect = defaultProtect();
   const P = e.protect;
   P.sheet = { ...defaultProtect().sheet, ...(P.sheet || {}) };
@@ -128,19 +154,10 @@ export function protectTab({ e, templates, edit, saver }) {
   async function run() {
     const t = text();
     if (!t.trim()) { res = null; draw(); return; }
-    try {
-      ctx = ctx || await loadEngine();
-      const g = readGlobal();
-      const extraGroups = {};
-      for (const d of g.dict || []) (extraGroups[d.role] = extraGroups[d.role] || []).push(d.name);
-      const dict = { groupes: [...ctx.dict.groupes, ...Object.entries(extraGroups).map(([role, noms]) => ({ role, employeurFrequent: role === 'emetteur_cote' || role === 'banque' || role === 'assureur', noms }))] };
-      const lexicon = ctx.lexMod.buildLexicon(dict);
-      res = ctx.eng.protect(t, { level: P.level, sheet: P.sheet, lexicon, extraFirstNames: ctx.names, communes: ctx.communes, alwaysMask: [...(P.alwaysMask || []), ...(g.always || [])], neverMask: [...(P.neverMask || []), ...(g.never || [])], overrides: P.overrides });
-      res.leaks = ctx.eng.leakCheck(res.protectedText, res.spans, P.sheet);
-    } catch (err) { res = { error: err.message || String(err) }; }
+    try { const r = await runProtect(e); ctx = r.ctx; res = r.res; }
+    catch (err) { res = { error: err.message || String(err) }; }
     draw();
   }
-
   // ----- décision sur un élément -----
   function decide(s) {
     const riskTitre = /même nom que l'employeur/.test(s.reason);
@@ -234,6 +251,25 @@ export function protectTab({ e, templates, edit, saver }) {
       P.alwaysMask.length ? h('p', { class: 'hint', text: `Termes ajoutés pour cette fiche : ${P.alwaysMask.length}.` }) : null,
       P.alwaysMask.length ? h('button', { class: 'btn small danger-ghost', onclick: () => { P.alwaysMask = []; edit(); run(); } }, icon('trash'), h('span', { text: 'Vider cette liste' })) : null));
 
+    // ----- revue persistée (parcours guidé) : la copie se fait à l'étape suivante -----
+    const hashNow = hashText(res.protectedText);
+    if (P.reviewedAt && P.reviewHash !== hashNow) {            // le texte protégé a changé depuis la revue (ou revue ancienne sans empreinte)
+      const had = !!P.reviewedAt; delete P.reviewedAt; delete P.reviewHash; if (had) edit();
+    }
+    if (parcours) {
+      const reviewed = !!P.reviewedAt;
+      const chkR = h('input', { type: 'checkbox', checked: reviewed, disabled: todo.length > 0, id: 'preview' });
+      chkR.addEventListener('change', () => {
+        if (chkR.checked) { P.reviewedAt = Date.now(); P.reviewHash = hashNow; } else { delete P.reviewedAt; delete P.reviewHash; }
+        edit(); if (root.onreview) root.onreview(chkR.checked); draw();
+      });
+      resultBox.append(h('div', { class: 'card', style: { marginTop: '16px' } },
+        h('div', { class: 'rt serif', style: { fontSize: '19px', color: 'var(--ink)' }, text: 'Revue obligatoire' }),
+        h('label', { class: 'check', style: { marginTop: '10px' } }, chkR, h('span', { text: 'J\'ai relu le texte protégé en entier et décidé tous les éléments signalés.' })),
+        todo.length ? h('p', { class: 'hint', style: { color: 'var(--danger)' }, text: `Il reste ${todo.length} élément${todo.length > 1 ? 's' : ''} à vérifier : décidez-les pour pouvoir valider la revue.` }) : null,
+        reviewed ? h('p', { class: 'hint', text: 'Revue enregistrée. Si vous modifiez le texte ou une décision, elle devra être refaite.' }) : null));
+      return;
+    }
     // ----- validation et copie -----
     const tplList = templates.filter((x) => !e.category || x.category === e.category || true);
     const sel = h('select', { class: 'field', 'aria-label': 'Trame du compte rendu' }, tplList.map((x) => h('option', { value: x.id, text: x.name, selected: x.id === selTemplate })));

@@ -18,13 +18,14 @@ const routes = [
   [/^\/trames$/, templatesView, 'templates'],
   [/^\/trame\/([\w-]+)$/, templateEditView, 'templates'],
   [/^\/reglages$/, settingsView, 'settings'],
+  [/^\/corbeille$/, async (a) => (await import('./trash-ui.js')).trashView(a), 'settings'],
 ];
 
 const app = document.getElementById('app');
 const tabbar = document.getElementById('tabbar');
 const TABS = [
-  ['home', '#/', 'home', 'Accueil'], ['library', '#/bibliotheque', 'folder', 'Bibliothèque'], ['new', '#/nouveau', 'plus', 'Nouvel entretien'],
-  ['templates', '#/trames', 'template', 'Trames'], ['settings', '#/reglages', 'gear', 'Réglages'],
+  ['home', '#/', 'home', 'Accueil'], ['library', '#/bibliotheque', 'folder', 'Bibliothèque'], ['new', '#/nouveau', 'plus', 'Importer une transcription'],
+  ['settings', '#/reglages', 'gear', 'Réglages'],
 ];
 const tabEls = {};
 for (const [id, href, ic, label] of TABS) {

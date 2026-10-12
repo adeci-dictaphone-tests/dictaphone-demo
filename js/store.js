@@ -31,6 +31,13 @@ export function normalize(s) {
   n.updatedAt = s.updatedAt ?? n.createdAt;
   n.lastOpened = s.lastOpened ?? 0;
   n.protect = s.protect && typeof s.protect === 'object' ? s.protect : null;     // fiche d'identité et décisions de la pseudonymisation (local, jamais exporté sans mot de passe)
+  // Transcription ORIGINALE : figée à l'import, jamais réécrite par une correction ou une protection (n.transcript = version corrigée).
+  n.original = typeof s.original === 'string' ? s.original : null;
+  n.originalPresumed = !!s.originalPresumed;                                       // ancienne fiche : original = texte présent à la première ouverture
+  n.originalHistory = Array.isArray(s.originalHistory) ? s.originalHistory : [];   // anciens originaux remplacés par un nouvel import
+  n.deletedAt = Number.isFinite(s.deletedAt) ? s.deletedAt : 0;                    // corbeille : fiche supprimée (restaurable)
+  n.trashGroup = typeof s.trashGroup === 'string' ? s.trashGroup : '';
+  n.trashed = s.trashed && typeof s.trashed === 'object' ? s.trashed : {};         // éléments retirés de la fiche : { document, audio, transcript }
   return n;
 }
 // ---------- Titre : « Nom — Sujet — jj/mm/aaaa » ----------
@@ -59,7 +66,11 @@ export const hasReport = (e) => reportOf(e).some((r) => (r.content || '').trim()
 export const hasAudio = (e) => e.nChunks > 0;
 export const wordCount = (t) => (t.trim() ? t.trim().split(/\s+/).length : 0);
 
-export async function listEntretiens() { return (await DB.listSessions()).map(normalize); }
+// Par défaut : fiches actives seulement (la corbeille est exclue de la bibliothèque, de l'accueil et des statistiques).
+export async function listEntretiens({ deleted = false, all = false } = {}) {
+  const l = (await DB.listSessions()).map(normalize);
+  return all ? l : l.filter((e) => !!e.deletedAt === deleted);
+}
 export async function getEntretien(id) { const s = await DB.getSession(id); return s ? normalize(s) : null; }
 export async function saveEntretien(e) {
   e.updatedAt = Date.now();
@@ -73,14 +84,95 @@ export async function createEntretien({ title, category, folderId = null, date, 
     id: uid('e'), name: title, title, category, folderId, date: date || now, templateId, transcript, who, subject, titleAuto,
     reportSections: null, source: 'texte', createdAt: now, updatedAt: now,
     nChunks: 0, durationSec: 0, doneChunks: 0, segments: [], summary: '', bookmarks: [], hasOriginal: false,
+    original: String(transcript || '').trim() ? transcript : null,
   });
   await DB.putSession(e);
   return e;
 }
+// Suppression DÉFINITIVE : réservée à la corbeille (purge). Les écrans appellent trashEntretien.
 export const removeEntretien = (id) => DB.deleteSession(id);
 
+// ---------- Original immuable ----------
+// Fige l'original d'une fiche qui n'en a pas encore. Une fois posé, il n'est plus jamais modifié (sauf par un NOUVEL import qui le remplace
+// explicitement : l'ancien est alors conservé dans originalHistory).
+export function ensureOriginal(e) {
+  if (e.original === null && S_hasText(e)) { e.original = transcriptOf(e); e.originalPresumed = true; return true; }
+  return false;
+}
+const S_hasText = (e) => transcriptOf(e).trim().length > 0;
+export function setOriginalFromImport(e, text, { replace = false, reason = 'import' } = {}) {
+  if (e.original === null || !String(e.original).trim()) { e.original = text; e.originalPresumed = false; return; }
+  if (replace) { e.originalHistory = [{ text: e.original, date: Date.now(), reason }, ...(e.originalHistory || [])].slice(0, 10); e.original = text; e.originalPresumed = false; }
+  else e.original = e.original.replace(/\s+$/, '') + '\n\n' + text;               // « ajouter à la suite » : le nouveau texte fait partie de la source
+}
+// Étape de la fiche dans le parcours (calculée, aucune migration) : importer, corriger, trame, chatgpt, compte-rendu, termine
+export function stepOf(e) {
+  if (!hasTranscript(e)) return 'importer';
+  if (!(e.protect && e.protect.reviewedAt && e.protect.reviewHash)) return 'corriger';   // une revue sans empreinte (ancienne version) est à refaire
+  if (!e.templateId) return 'trame';
+  if (!hasReport(e)) return (e.protect && e.protect.copiedAt) ? 'compte-rendu' : 'chatgpt';
+  return 'termine';
+}
+
+// ---------- Corbeille (suppression réversible) ----------
+// Rien n'est supprimé au premier geste : un marqueur « deletedAt » masque l'élément partout. La suppression définitive (purge) est une
+// action séparée ; elle laisse une « pierre tombale » pour qu'une ancienne sauvegarde ne ressuscite pas silencieusement l'élément.
+const TOMB_KEY = 'dia_tombstones';
+export function getTombstones() { try { const v = JSON.parse(localStorage.getItem(TOMB_KEY)); return Array.isArray(v) ? v : []; } catch { return []; } }
+export function addTombstones(list) {
+  try {
+    const cur = getTombstones(); const have = new Set(cur.map((t) => t.id));
+    for (const t of list) if (t && t.id && !have.has(t.id)) { cur.push({ id: t.id, kind: t.kind || 'fiche', at: t.at || Date.now() }); have.add(t.id); }
+    localStorage.setItem(TOMB_KEY, JSON.stringify(cur.slice(-5000)));
+  } catch {}
+}
+export async function trashEntretien(e, { group = '' } = {}) {
+  if (e.deletedAt) return e;
+  e.deletedAt = Date.now(); e.trashGroup = group || '';
+  return saveEntretien(e);
+}
+export async function restoreEntretien(e) {
+  const folders = await listFolders({ all: true });
+  const f = e.folderId ? folders.find((x) => x.id === e.folderId) : null;
+  if (e.folderId && (!f || f.deletedAt)) e.folderId = null;                        // son dossier a été supprimé : retour à la racine
+  e.deletedAt = 0; e.trashGroup = '';
+  return saveEntretien(e);
+}
+export async function purgeEntretien(e) {
+  await DB.deleteSession(e.id);
+  addTombstones([{ id: e.id, kind: 'fiche' }]);
+}
+// Éléments retirés d'une fiche (la fiche reste active)
+export async function trashPart(e, part, payload = {}) {
+  e.trashed = { ...(e.trashed || {}), [part]: { at: Date.now(), ...payload } };
+  if (part === 'transcript') e.transcript = '';                                    // l'ORIGINAL (e.original) n'est jamais touché
+  return saveEntretien(e);
+}
+export async function restorePart(e, part, { mode = 'replace' } = {}) {
+  const t = (e.trashed || {})[part]; if (!t) return e;
+  if (part === 'transcript') {
+    const cur = transcriptOf(e);
+    e.transcript = mode === 'append' && cur.trim() ? cur.replace(/\s+$/, '') + '\n\n' + t.text : t.text;
+  }
+  const next = { ...e.trashed }; delete next[part]; e.trashed = next;
+  return saveEntretien(e);
+}
+export async function purgePart(e, part) {
+  const t = (e.trashed || {})[part]; if (!t) return e;
+  if (part === 'document') { try { await DB.rawDeleteOriginal(e.id); } catch {} e.hasOriginal = false; }
+  if (part === 'audio') {
+    for (let i = 0; i < (t.nChunks || e.nChunks || 0); i++) { try { await DB.deleteChunk(e.id, i); } catch {} }
+    e.nChunks = 0; e.doneChunks = 0; e.durationSec = 0; e.hadAudio = false;
+  }
+  const next = { ...e.trashed }; delete next[part]; e.trashed = next;
+  return saveEntretien(e);
+}
+
 // ---------- Dossiers ----------
-export const listFolders = () => DB.listFolders();
+export async function listFolders({ deleted = false, all = false } = {}) {
+  const l = await DB.listFolders();
+  return all ? l : l.filter((f) => !!f.deletedAt === deleted);
+}
 export async function createFolder({ category, parentId = null, name }) {
   const f = { id: uid('d'), category, parentId, name: name.trim(), createdAt: Date.now(), lastOpened: 0 };
   await DB.putFolder(f);
@@ -89,11 +181,78 @@ export async function createFolder({ category, parentId = null, name }) {
 export async function renameFolder(f, name) { f.name = name.trim(); await DB.putFolder(f); }
 export async function moveFolder(f, parentId) { f.parentId = parentId; await DB.putFolder(f); }
 export async function touchFolder(f) { f.lastOpened = Date.now(); await DB.putFolder(f); }
-// Suppression NON destructive : le contenu du dossier est remonté dans le dossier parent.
-export async function deleteFolder(f, folders, entretiens) {
-  for (const sub of folders.filter((x) => x.parentId === f.id)) { sub.parentId = f.parentId; await DB.putFolder(sub); }
-  for (const e of entretiens.filter((x) => x.folderId === f.id)) { e.folderId = f.parentId; await saveEntretien(e); }
-  await DB.deleteFolderRecord(f.id);
+// Suppression d'un dossier SEUL (corbeille) : le contenu est remonté dans le dossier parent, jamais supprimé. Les liens d'origine sont
+// mémorisés (formerChildren) : restaurer le dossier remet son contenu dedans, si rien n'a bougé entre-temps.
+export async function trashFolderOnly(f, folders, entretiens) {
+  const subs = folders.filter((x) => x.parentId === f.id && !x.deletedAt), fiches = entretiens.filter((x) => x.folderId === f.id && !x.deletedAt);
+  f.formerChildren = { folders: subs.map((x) => x.id), sessions: fiches.map((x) => x.id) };
+  for (const sub of subs) { sub.parentId = f.parentId; await DB.putFolder(sub); }
+  for (const e of fiches) { e.folderId = f.parentId; await saveEntretien(e); }
+  f.deletedAt = Date.now(); f.trashGroup = '';
+  await DB.putFolder(f);
+}
+// Suppression d'un dossier ET de tout son contenu (action explicite) : tout part dans la corbeille sous un même groupe, restaurable d'un geste.
+export async function trashFolderTree(f, folders, entretiens) {
+  const group = uid('g'); const ids = descendantIds(f.id, folders);
+  let nF = 0, nS = 0;
+  for (const x of folders) if (ids.has(x.id) && !x.deletedAt) { x.deletedAt = Date.now(); x.trashGroup = group; await DB.putFolder(x); nF++; }
+  for (const e of entretiens) if (e.folderId && ids.has(e.folderId) && !e.deletedAt) { await trashEntretien(e, { group }); nS++; }
+  return { group, folders: nF, fiches: nS };
+}
+export function folderContents(f, folders, entretiens) {
+  const ids = descendantIds(f.id, folders);
+  const subs = folders.filter((x) => ids.has(x.id) && x.id !== f.id);
+  const fiches = entretiens.filter((e) => e.folderId && ids.has(e.folderId));
+  return { subs, fiches, direct: entretiens.filter((e) => e.folderId === f.id), directSubs: folders.filter((x) => x.parentId === f.id) };
+}
+export async function restoreFolder(f) {
+  const [folders, fiches] = [await listFolders({ all: true }), await listEntretiens({ all: true })];
+  if (f.trashGroup) {                                                           // restauration d'un groupe : dossier(s) et fiches supprimés ensemble
+    for (const x of folders) if (x.trashGroup === f.trashGroup) { x.deletedAt = 0; x.trashGroup = ''; await DB.putFolder(x); }
+    for (const e of fiches) if (e.trashGroup === f.trashGroup) { e.deletedAt = 0; e.trashGroup = ''; await saveEntretien(e); }
+    return;
+  }
+  const parent = f.parentId ? folders.find((x) => x.id === f.parentId) : null;
+  if (f.parentId && (!parent || parent.deletedAt)) f.parentId = null;
+  const fc = f.formerChildren || { folders: [], sessions: [] };
+  for (const sub of folders) if (fc.folders.includes(sub.id) && !sub.deletedAt && sub.parentId === f.parentId) { sub.parentId = f.id; await DB.putFolder(sub); }
+  for (const e of fiches) if (fc.sessions.includes(e.id) && !e.deletedAt && e.folderId === f.parentId) { e.folderId = f.id; await saveEntretien(e); }
+  f.deletedAt = 0; delete f.formerChildren;
+  await DB.putFolder(f);
+}
+export async function purgeFolder(f) {
+  const [folders, fiches] = [await listFolders({ all: true }), await listEntretiens({ all: true })];
+  const tomb = [];
+  if (f.trashGroup) {
+    for (const e of fiches) if (e.trashGroup === f.trashGroup) { await DB.deleteSession(e.id); tomb.push({ id: e.id, kind: 'fiche' }); }
+    for (const x of folders) if (x.trashGroup === f.trashGroup) { await DB.deleteFolderRecord(x.id); tomb.push({ id: x.id, kind: 'dossier' }); }
+  } else { await DB.deleteFolderRecord(f.id); tomb.push({ id: f.id, kind: 'dossier' }); }
+  addTombstones(tomb);
+}
+// Contenu de la corbeille : fiches, dossiers (seuls ou en groupe), et éléments retirés de fiches actives.
+export async function listTrash() {
+  const [fiches, folders] = [await listEntretiens({ all: true }), await listFolders({ all: true })];
+  const out = []; const groups = new Map();
+  for (const f of folders.filter((x) => x.deletedAt)) {
+    if (f.trashGroup) { const g = groups.get(f.trashGroup) || { kind: 'groupe', id: f.trashGroup, at: f.deletedAt, folders: [], fiches: [] }; g.folders.push(f); groups.set(f.trashGroup, g); }
+    else out.push({ kind: 'dossier', id: f.id, at: f.deletedAt, folder: f, title: f.name });
+  }
+  for (const e of fiches.filter((x) => x.deletedAt)) {
+    const g = e.trashGroup && groups.get(e.trashGroup);
+    if (g) g.fiches.push(e); else out.push({ kind: 'fiche', id: e.id, at: e.deletedAt, e, title: e.title });
+  }
+  for (const g of groups.values()) {
+    const ids = new Set(g.folders.map((x) => x.id));
+    g.root = g.folders.find((x) => !ids.has(x.parentId)) || g.folders[0];
+    g.title = g.root ? g.root.name : 'Dossier'; out.push(g);
+  }
+  for (const e of fiches.filter((x) => !x.deletedAt)) {
+    const t = e.trashed || {};
+    if (t.document) out.push({ kind: 'document', id: e.id + ':document', at: t.document.at, e, title: (t.document.name || 'Document') + ' — ' + e.title });
+    if (t.audio) out.push({ kind: 'audio', id: e.id + ':audio', at: t.audio.at, e, title: 'Audio — ' + e.title });
+    if (t.transcript) out.push({ kind: 'transcription', id: e.id + ':transcript', at: t.transcript.at, e, title: 'Transcription corrigée — ' + e.title });
+  }
+  return out.sort((a, b) => b.at - a.at);
 }
 export function folderPath(id, folders) {
   const path = [];
@@ -219,7 +378,7 @@ export function statsFor(entretiens) {
     const k = e.category || 'none';
     const b = (by[k] ||= { total: 0, toWrite: 0 });
     b.total++;
-    if (hasTranscript(e) && !hasReport(e)) b.toWrite++;
+    if (stepOf(e) !== 'termine') b.toWrite++;
   }
   return by;
 }

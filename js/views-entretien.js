@@ -5,11 +5,8 @@ import * as S from './store.js';
 import { kv } from './vault.js';
 import { go, topbar, pickFolder } from './common.js';
 import { fmtDate, fmtDateTime, reportText, transcriptText, copyText, downloadText, downloadBlob, shareOrDownload, printReport, safeName, metaLine, docPdfFile, validEmail, splitAddresses, mailtoHref, openMailto } from './exports.js';
-import { AI_STATUS_TEXT } from './ai.js';
-import { usableModel } from './ia-local.js';
-import { engineSettings, shortModel } from './ia-engine.js';
-import { assistReport } from './assist.js';
 import { buildWavBlob, attachWav, audioDigest } from '../audio.js';
+import * as DB from '../db.js';
 import { cleanText, pickFile, readImport, previewImport, words as wordsOf } from './import.js';
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -29,6 +26,7 @@ function addTextMenu(onPaste, onImport) {
 // NOUVEL ENTRETIEN
 // =====================================================================
 const DRAFT = 'dia_draft';
+const MAX_DOC = 40 * 1024 * 1024;     // taille maximale d'un document joint conservé avec la fiche
 export async function newView({ query }) {
   const [folders, templates] = await Promise.all([S.listFolders(), S.listTemplates()]);
   let d = {};
@@ -108,6 +106,7 @@ export async function newView({ query }) {
 
   // ----- importation : aperçu obligatoire, ancien texte conservé -----
   let previous = null;   // texte avant le dernier changement (annulation)
+  let pendingFile = null; // fichier importé : conservé avec la fiche à sa création (un seul document par fiche)
   const undoBtn = h('button', { class: 'btn small', style: { marginTop: '10px' }, hidden: true }, icon('back'), h('span', { text: 'Rétablir le texte précédent' }));
   undoBtn.addEventListener('click', () => {
     if (previous === null) return;
@@ -123,7 +122,8 @@ export async function newView({ query }) {
       if (existing.trim()) { previous = existing; undoBtn.hidden = false; }
     }
     st.transcript = ta.value; updStats(); saveDraft();
-    toast(meta.file ? 'Fichier importé' : 'Transcription collée');
+    if (meta.fileObj && !pendingFile) pendingFile = meta.fileObj;
+    toast(meta.file ? 'Fichier importé' + (pendingFile && pendingFile.size <= MAX_DOC ? ' : il sera conservé avec la fiche' : '') : 'Transcription collée');
   }
   async function paste() {
     try {
@@ -138,7 +138,7 @@ export async function newView({ query }) {
     const f = await pickFile();
     if (!f) return;
     toast('Lecture du fichier…', 2000);
-    try { const r = await readImport(f); await receive(r.text, { name: r.name, kind: r.kind, info: r.info, file: true }); }
+    try { const r = await readImport(f); await receive(r.text, { name: r.name, kind: r.kind, info: r.info, file: true, fileObj: f }); }
     catch (err) { toast(err.message, 6500); }
   }
 
@@ -147,9 +147,14 @@ export async function newView({ query }) {
     const t = (st.title || '').trim() || S.composeTitle(cat, st.who, st.subject, st.date);
     const e = await S.createEntretien({ title: t, category: cat, folderId: st.folderId, date: st.date, templateId: st.templateId, transcript: cleanText(ta.value), who: st.who.trim(), subject: st.subject.trim(), titleAuto: !st.titleManual });
     S.setSetting('lastCategory', cat);
+    // le fichier importé est conservé avec la fiche (document joint) ; au-delà de la taille maximale, seul le texte est gardé
+    if (pendingFile && pendingFile.size <= MAX_DOC) {
+      try { await DB.putOriginal(e.id, { blob: pendingFile, name: pendingFile.name, type: pendingFile.type || 'application/octet-stream' }); e.hasOriginal = true; await S.saveEntretien(e); }
+      catch (err) { toast('Fiche créée, mais le fichier n\'a pas pu être conservé : ' + err.message, 6000); }
+    }
     clearDraft();
-    toast('Entretien créé');
-    go('#/entretien/' + e.id);
+    toast('Fiche créée : étape suivante, corriger et protéger');
+    go('#/entretien/' + e.id + '?tab=corriger');
   }
 
   const el = h('div', { class: 'view' },
@@ -189,6 +194,7 @@ export async function ficheView({ params, query }) {
     await S.saveEntretien(e); saveState.textContent = 'Enregistré à ' + new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); });
   const edit = () => { saveState.textContent = 'Modification…'; saver.trigger(); };
   const cleanups = [];
+  const audioOn = () => e.nChunks > 0 && !(e.trashed && e.trashed.audio);          // audio retiré = dans la corbeille de la fiche
 
   // ----- en-tête -----
   // Titre sur plusieurs lignes si nécessaire (un champ à une seule ligne couperait les titres longs)
@@ -233,6 +239,10 @@ export async function ficheView({ params, query }) {
   }
   // Un compte rendu généré par l'IA et non relu ne part pas sans confirmation explicite (PDF, mail, copie, fichier, impression)
   async function guardReview(fn) {
+    if (e.namesRestored && S.hasReport(e)) {
+      const okN = await confirmDialog({ title: 'Vérification avant export', message: 'Ce compte rendu contient maintenant des NOMS RÉELS remis localement (réintégration des identités). Relisez-le et vérifiez que le destinataire est autorisé à les recevoir.', confirmLabel: 'J\'ai vérifié, continuer' });
+      if (!okN) return;
+    }
     if (e.iaInfo && !e.iaInfo.reviewed && S.hasReport(e)) {
       const ok = await confirmDialog({ title: 'Compte rendu non relu', message: 'Ce compte rendu a été généré par l\'IA et n\'est pas encore marqué comme relu. Une relecture humaine (montants, noms, dates, décisions) est indispensable avant tout usage professionnel.\nContinuer quand même ?', confirmLabel: 'Continuer quand même' });
       if (!ok) return;
@@ -308,13 +318,9 @@ export async function ficheView({ params, query }) {
     } });
   }
   async function deleteIt() {
-    const ok = await confirmDialog({ title: 'Supprimer cet entretien ?', danger: true, confirmLabel: 'Supprimer définitivement',
-      message: `« ${e.title} » sera supprimé de cet appareil avec sa transcription, son compte rendu et son audio.\nCette action est irréversible. Pensez à faire une sauvegarde.` });
-    if (!ok) return;
-    await saver.dispose();
-    await S.removeEntretien(e.id);
-    toast('Entretien supprimé');
-    go('#/bibliotheque' + (e.category ? '?cat=' + e.category : ''));
+    await saver.flush();
+    const { trashFiches } = await import('./trash-ui.js');
+    await trashFiches([e], { onDone: (r) => { if (r === 'trashed') go('#/bibliotheque' + (e.category ? '?cat=' + e.category : '')); } });
   }
 
   // ----- audio (simple : lecture/pause, progression, durée) -----
@@ -345,7 +351,7 @@ export async function ficheView({ params, query }) {
 
   // ----- onglet Transcription -----
   const REASONS = { remplacement: 'Remplacement', ajout: 'Ajout', collage: 'Collage', import: 'Import', correction: 'Correction', 'rétablissement': 'Rétablissement', 'avant suppression importante': 'Avant une suppression importante' };
-  function transcriptTab() {
+  function transcriptEditor() {
     const ta = h('textarea', { class: 'textarea doc doc-scroll', spellcheck: 'false', autocorrect: 'off', 'aria-label': 'Transcription', placeholder: 'Aucune transcription. Touchez « Ajouter du texte ».' });
     ta.value = S.transcriptOf(e);
     const fit = autosize(ta);
@@ -391,14 +397,28 @@ export async function ficheView({ params, query }) {
     histBtn.refresh();
 
     // Réception d'un contenu (collage ou fichier) : aperçu obligatoire dès qu'un texte existe ou qu'il s'agit d'un fichier
+    // Document joint : le fichier importé est conservé avec la fiche (un seul par fiche, jamais d'écrasement, 40 Mo maximum)
+    async function attachDocument(file) {
+      if (!file) return;
+      if (file.size > MAX_DOC) { toast('Fichier trop volumineux pour être conservé (40 Mo maximum) : seul le texte est importé.', 5000); return; }
+      if ((e.hasOriginal && !(e.trashed && e.trashed.document)) || (e.trashed && e.trashed.document)) { toast('Un document est déjà joint à cette fiche (ou dans sa corbeille) : seul le texte est importé.', 5000); return; }
+      try { await DB.putOriginal(e.id, { blob: file, name: file.name, type: file.type || 'application/octet-stream' }); e.hasOriginal = true; edit(); }
+      catch (err) { toast('Le fichier n\'a pas pu être conservé : ' + err.message, 5000); }
+    }
     async function receive(incoming, meta) {
       const existing = ta.value;
-      if (!meta.file && !existing.trim()) { if (await applyChange(incoming, 'collage', meta.name)) toast('Transcription collée'); return; }
+      S.ensureOriginal(e);                                                           // ancienne fiche : le texte actuel devient l'original (présumé) avant tout changement
+      if (!meta.file && !existing.trim()) { if (await applyChange(incoming, 'collage', meta.name)) { S.setOriginalFromImport(e, incoming); edit(); toast('Transcription collée'); } return; }
       const mode = await previewImport({ existing, incoming, name: meta.name, kind: meta.kind, info: meta.info });
       if (!mode) return;
       const newText = mode === 'append' ? existing.replace(/\s+$/, '') + '\n\n' + incoming : incoming;
       const ok = await applyChange(newText, mode === 'append' ? 'ajout' : mode === 'replace' ? 'remplacement' : 'import', meta.name);
-      if (ok) toast(mode === 'append' ? 'Texte ajouté à la suite' : mode === 'replace' ? 'Texte remplacé : l\'ancien reste dans « Versions précédentes »' : 'Fichier importé', 5000);
+      if (ok) {
+        S.setOriginalFromImport(e, incoming, { replace: mode === 'replace', reason: meta.name || 'import' });
+        if (meta.fileObj) await attachDocument(meta.fileObj);
+        edit();
+        toast(mode === 'append' ? 'Texte ajouté à la suite' : mode === 'replace' ? 'Texte remplacé : l\'ancien reste dans « Versions précédentes »' : 'Fichier importé', 5000);
+      }
     }
     const paste = async () => {
       try { const t = cleanText(await navigator.clipboard.readText()); if (!t.trim()) return toast('Le presse-papiers est vide.'); await receive(t, { name: 'Texte collé', kind: 'txt' }); }
@@ -407,7 +427,7 @@ export async function ficheView({ params, query }) {
     const imp = async () => {
       const f = await pickFile(); if (!f) return;
       toast('Lecture du fichier…', 2000);
-      try { const r = await readImport(f); await receive(r.text, { name: r.name, kind: r.kind, info: r.info, file: true }); }
+      try { const r = await readImport(f); await receive(r.text, { name: r.name, kind: r.kind, info: r.info, file: true, fileObj: f }); }
       catch (err) { toast(err.message, 6500); }
     };
     const fix = () => sheet({ title: 'Corriger la transcription', build(body, close) {
@@ -436,13 +456,15 @@ export async function ficheView({ params, query }) {
           last && last.reason === 'correction' ? h('button', { class: 'btn', text: 'Annuler la dernière correction', onclick: async () => { close(); toast((await applyChange(last.text, 'rétablissement', 'avant correction')) ? 'Correction annulée' : 'Annulation impossible'); } }) : null,
           h('button', { class: 'btn', text: 'Fermer', onclick: close })));
     } });
-    return h('div', {},
+    const view = h('div', {},
       h('div', { class: 'actions' },
         h('button', { class: 'btn small primary', onclick: () => addTextMenu(paste, imp) }, icon('plus'), h('span', { text: 'Ajouter du texte' })),
         h('button', { class: 'btn small', onclick: fix }, icon('edit'), h('span', { text: 'Corriger' })),
         histBtn),
       ta, stats);
+    return { el: view, paste, imp, fix, apply: applyChange, menu: () => addTextMenu(paste, imp) };
   }
+  const transcriptTab = () => transcriptEditor().el;
   // ----- onglet Compte rendu -----
   function mergeSections(existing, tpl) {
     const used = new Set();
@@ -478,10 +500,14 @@ export async function ficheView({ params, query }) {
     });
 
     // ----- rédaction par l'IA (moteur local) : jamais simulée, toujours à relire -----
+    // IA locale : masquée par défaut ; ses modules ne sont chargés que si les « fonctions avancées » sont activées (code conservé).
+    const iaHolder = h('div', {});
+    const hasT = S.hasTranscript(e);
+    async function buildIa() {
+    const [{ engineSettings, shortModel }, { usableModel }, { assistReport }] = await Promise.all([import('./ia-engine.js'), import('./ia-local.js'), import('./assist.js')]);
     const eng = engineSettings();
     const um = eng.kind === 'webgpu' ? usableModel() : null;
     const ready = eng.kind === 'server' || !!um;
-    const hasT = S.hasTranscript(e);
     const ia = h('div', { class: 'card ia-card' },
       h('div', { class: 'rt serif', style: { fontSize: '20px', color: 'var(--ink)' } }, h('span', { text: 'Rédaction par l\'IA' }), h('span', { class: 'badge', text: ready ? 'Locale' : 'Non configurée' })),
       h('p', { class: 'hint', text: ready
@@ -526,6 +552,10 @@ export async function ficheView({ params, query }) {
           h('button', { class: 'btn', text: 'Annuler', onclick: close })));
       } });
     }
+    iaHolder.replaceChildren(ia);
+    if (query.assist) setTimeout(() => { query.assist = ''; assistSheet(); }, 500);
+    }
+    if (S.getSettings().advanced) buildIa().catch((err) => console.error('IA locale :', err && err.message));
 
     const KIND_LABEL = { 'à confirmer': 'À confirmer', 'à vérifier': 'À vérifier', contradiction: 'Contradiction', 'sans source': 'Sans source dans la transcription', corrigé: 'Corrigé' };
     const flagsBlock = (s) => (s.flags && s.flags.length ? h('div', { class: 'rflags' }, s.flags.slice(0, 8).map((f) => h('div', { class: 'rflag' }, icon('info'), h('span', {}, h('b', { text: (KIND_LABEL[f.kind] || f.kind) + ' : ' }), f.text)))) : null);
@@ -572,7 +602,7 @@ export async function ficheView({ params, query }) {
       /* Copier, exporter et envoyer par mail : menu « Partager » en haut de la fiche */
     }
     renderBody();
-    if (query.assist) setTimeout(() => { query.assist = ''; assistSheet(); }, 500);    const prevRep = e.reportHistory[0];
+    const prevRep = e.reportHistory[0];
     const restoreBtn = prevRep ? h('button', { class: 'btn small', style: { marginBottom: '12px' }, onclick: async () => {
       if (!(await confirmDialog({ title: 'Rétablir le compte rendu précédent ?', message: 'Le compte rendu actuel sera remplacé par celui d\'avant la dernière rédaction par IA (du ' + fmtDateTime(prevRep.date) + ').', confirmLabel: 'Rétablir' }))) return;
       try {
@@ -582,7 +612,7 @@ export async function ficheView({ params, query }) {
       } catch { toast('Rétablissement impossible.'); }
     } }, icon('back'), h('span', { text: 'Rétablir le compte rendu d\'avant la dernière rédaction IA' })) : null;
     // La rédaction par IA locale et l'assistant sans IA ne sont affichés que si les « fonctions avancées » sont activées (Réglages).
-    return h('div', {}, h('label', { class: 'lbl', style: { marginTop: 0 }, text: 'Trame' }), tplSel, h('div', { style: { height: '14px' } }), S.getSettings().advanced ? ia : null, restoreBtn,  h('div', { style: { height: '16px' } }), box);
+    return h('div', {}, h('label', { class: 'lbl', style: { marginTop: 0 }, text: 'Trame' }), tplSel, h('div', { style: { height: '14px' } }), iaHolder, restoreBtn,  h('div', { style: { height: '16px' } }), box);
   }
 
   // ----- onglet Infos -----
@@ -620,13 +650,17 @@ export async function ficheView({ params, query }) {
       h('label', { class: 'lbl', text: 'Date de l\'entretien' }), dateInp,
       h('div', { class: 'card', style: { marginTop: '18px' } }, h('div', { class: 'info-grid' },
         kv('Source', srcLabel), kv('Trame', tplName() || '—'), kv('Créé le', fmtDateTime(e.createdAt)), kv('Modifié le', fmtDateTime(e.updatedAt)),
-        kv('Mots', String(S.wordCount(S.transcriptOf(e)))), e.nChunks ? kv('Audio', fmtDur(e.durationSec)) : null)),
-      e.nChunks ? h('button', { class: 'btn', style: { marginTop: '12px' }, onclick: async () => {
+        kv('Mots', String(S.wordCount(S.transcriptOf(e)))), audioOn() ? kv('Audio', fmtDur(e.durationSec)) : null)),
+      audioOn() ? h('button', { class: 'btn', style: { marginTop: '12px' }, onclick: async () => {
         try { const blob = await buildWavBlob(e); await shareOrDownload([new File([blob], safeName(e.title) + '.wav', { type: 'audio/wav' })], e.title); } catch (err) { toast('Export impossible : ' + err.message); }
       } }, icon('share'), h('span', { text: 'Exporter l\'audio (WAV)' })) : null,
-      e.nChunks ? h('button', { class: 'btn', style: { marginTop: '8px' }, onclick: async (ev) => { ev.target.disabled = true; try { const d = await audioDigest(e); toast('Empreinte audio : ' + d.sha256.slice(0, 24) + '… (' + d.chunks + ' morceaux)', 8000); } catch (err) { toast('Calcul impossible : ' + err.message, 5000); } ev.target.disabled = false; } }, icon('shield'), h('span', { text: 'Calculer l\'empreinte de l\'audio' })) : null,
-      !e.nChunks ? h('button', { class: 'btn', style: { marginTop: '12px' }, onclick: attachAudio }, icon('upload'), h('span', { text: 'Rattacher un audio (WAV exporté)' })) : null,
-      h('button', { class: 'btn danger-ghost', style: { marginTop: '24px' }, onclick: deleteIt }, icon('trash'), h('span', { text: 'Supprimer l\'entretien' })));
+      audioOn() ? h('button', { class: 'btn', style: { marginTop: '8px' }, onclick: async (ev) => { ev.target.disabled = true; try { const d = await audioDigest(e); toast('Empreinte audio : ' + d.sha256.slice(0, 24) + '… (' + d.chunks + ' morceaux)', 8000); } catch (err) { toast('Calcul impossible : ' + err.message, 5000); } ev.target.disabled = false; } }, icon('shield'), h('span', { text: 'Calculer l\'empreinte de l\'audio' })) : null,
+      !e.nChunks && !(e.trashed && e.trashed.audio) ? h('button', { class: 'btn', style: { marginTop: '12px' }, onclick: attachAudio }, icon('upload'), h('span', { text: 'Rattacher un audio (WAV exporté)' })) : null,
+      h('details', { class: 'evid', style: { marginTop: '22px' } }, h('summary', { text: 'Options avancées' }),
+        S.hasTranscript(e) ? h('button', { class: 'btn', style: { marginTop: '10px' }, onclick: async () => { await saver.flush(); const { trashPartFlow } = await import('./trash-ui.js'); if (await trashPartFlow(e, 'transcript', { onDone: () => { renderBody(); } })) { /* l'original est conservé dans la fiche */ } } }, icon('trash'), h('span', { text: 'Retirer la transcription corrigée' })) : null,
+        e.hasOriginal && !(e.trashed && e.trashed.document) ? h('button', { class: 'btn', style: { marginTop: '10px' }, onclick: async () => { const { trashPartFlow } = await import('./trash-ui.js'); await trashPartFlow(e, 'document', { onDone: () => { renderBody(); } }); } }, icon('trash'), h('span', { text: 'Retirer le document joint' })) : null,
+        e.nChunks > 0 && !(e.trashed && e.trashed.audio) ? h('button', { class: 'btn', style: { marginTop: '10px' }, onclick: async () => { const { trashPartFlow } = await import('./trash-ui.js'); await trashPartFlow(e, 'audio', { onDone: () => { renderBody(); } }); } }, icon('trash'), h('span', { text: 'Retirer l\'enregistrement audio' })) : null),
+      h('button', { class: 'btn danger-ghost', style: { marginTop: '24px' }, onclick: deleteIt }, icon('trash'), h('span', { text: 'Mettre cette fiche dans la corbeille' })));
   }
 
   // Rattache un WAV exporté par l'application à une fiche sans audio : écriture relue morceau par morceau, jamais d'écrasement.
@@ -647,27 +681,274 @@ export async function ficheView({ params, query }) {
   // ----- onglet « Protéger » : module chargé seulement à l'ouverture de l'onglet -----
   function protectHolder() {
     const holder = h('div', {}, h('p', { class: 'hint', text: 'Chargement de la protection…' }));
-    import('./protect-ui.js').then((m) => { holder.replaceChildren(m.protectTab({ e, templates, edit, saver }).el); })
+    import('./protect-ui.js').then((m) => { holder.replaceChildren(m.protectTab({ e, templates, edit, saver, parcours: true }).el); })
       .catch((err) => holder.replaceChildren(h('div', { class: 'banner warn' }, icon('info'), h('div', { text: 'La fonction Protéger n\'a pas pu se charger : ' + (err && err.message ? err.message : err) + '. Vos données ne sont pas modifiées.' }))));
     return holder;
   }
 
-  // ----- assemblage -----
+  // ----- parcours guidé : Importer → Corriger et protéger → Trame → ChatGPT → Compte rendu -----
+  const CHATGPT_URL = 'https://chatgpt.com/';
+  const STEPS = [['importer', 'Importer', 'Importer'], ['corriger', 'Corriger et protéger', 'Corriger'], ['trame', 'Choisir la trame', 'Trame'], ['chatgpt', 'Ouvrir dans ChatGPT', 'ChatGPT'], ['compte-rendu', 'Enregistrer le compte rendu', 'Compte rendu']];
+  const LEGACY = { transcription: 'corriger', proteger: 'corriger' };
+  const stepIds = STEPS.map((x) => x[0]);
+  let step = query.tab && (stepIds.includes(query.tab) ? query.tab : (LEGACY[query.tab] || (query.tab === 'infos' ? 'infos' : null)));
+  if (!step) { const st = S.stepOf(e); step = st === 'termine' ? 'compte-rendu' : st; }
+  let corrView = 'corrige';
   const body = h('div', {});
-  const tabs = h('div', { class: 'tabs', role: 'tablist' });
-  const TABS = [['transcription', 'Transcription'], ['proteger', 'Protéger'], ['compte-rendu', 'Compte rendu'], ['infos', 'Informations']];
+  const stepBar = h('div', { class: 'steps', role: 'tablist', 'aria-label': 'Étapes' });
+  const stepNav = h('div', { class: 'stepnav' });
+  const doneOf = (id) => ({ importer: S.hasTranscript(e), corriger: !!(e.protect && e.protect.reviewedAt && e.protect.reviewHash), trame: !!e.templateId, chatgpt: !!(e.protect && e.protect.copiedAt), 'compte-rendu': S.hasReport(e) }[id]);
+  const goStep = async (id) => { await saver.flush(); step = id; renderBody(); window.scrollTo(0, 0); };
+
+  // --- documents joints (fichier importé conservé avec la fiche) ---
+  function docCard() {
+    const card = h('div', { class: 'card', style: { marginTop: '14px' } });
+    const draw = async () => {
+      card.replaceChildren(h('div', { class: 'eyebrow', text: 'Document joint' }));
+      const on = e.hasOriginal && !(e.trashed && e.trashed.document);
+      if (!on) { card.append(h('p', { class: 'hint', text: e.trashed && e.trashed.document ? 'Le document de cette fiche est dans la corbeille (Réglages › Corbeille).' : 'Aucun document joint. Un fichier PDF ou TXT importé est conservé ici.' })); return; }
+      let o = null; try { o = await DB.getOriginal(e.id); } catch (err) { card.append(h('p', { class: 'hint', text: 'Document illisible : ' + err.message })); return; }
+      if (!o || !o.blob) { card.append(h('p', { class: 'hint', text: 'Aucun document joint.' })); return; }
+      const kb = Math.max(1, Math.round(o.blob.size / 1024));
+      card.append(h('div', { style: { fontWeight: '600', color: 'var(--ink)' }, text: o.name || 'document' }), h('div', { class: 'hint', style: { margin: '2px 0 8px' }, text: (kb > 1024 ? (kb / 1024).toFixed(1) + ' Mo' : kb + ' Ko') + ' · conservé sur cet appareil' }),
+        h('div', { class: 'btn-row' },
+          h('button', { class: 'btn small', onclick: () => { const url = URL.createObjectURL(o.blob); window.open(url, '_blank', 'noopener'); setTimeout(() => URL.revokeObjectURL(url), 60000); } }, icon('doc'), h('span', { text: 'Ouvrir' })),
+          h('button', { class: 'btn small', onclick: async () => { await shareOrDownload([new File([o.blob], o.name || 'document', { type: o.type || 'application/octet-stream' })], o.name || 'document'); } }, icon('share'), h('span', { text: 'Exporter' })),
+          h('button', { class: 'btn small danger-ghost', onclick: async () => { const { trashPartFlow } = await import('./trash-ui.js'); await trashPartFlow(e, 'document', { onDone: () => draw() }); } }, icon('trash'), h('span', { text: 'Retirer' }))));
+    };
+    draw();
+    return card;
+  }
+
+  // --- 1. Importer ---
+  function stepImporter() {
+    const ed = transcriptEditor();
+    const has = S.hasTranscript(e);
+    const wrap = h('div', {});
+    wrap.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: 'Copiez la transcription depuis le Dictaphone d\'Apple, puis collez-la ici, ou importez un fichier PDF ou TXT. La transcription originale est conservée telle quelle.' }));
+    if (!has) {
+      wrap.append(h('button', { class: 'btn primary bigpaste', onclick: () => ed.menu() }, icon('plus'), h('span', { text: 'Ajouter la transcription' })));
+    } else {
+      S.ensureOriginal(e);
+      const w = S.wordCount(e.original || S.transcriptOf(e));
+      wrap.append(h('div', { class: 'card' },
+        h('div', { class: 'eyebrow', text: 'Transcription originale' }),
+        h('div', { class: 'hint', style: { margin: '2px 0 6px' }, text: `${w} mot${w > 1 ? 's' : ''} · enregistrée dans la fiche, non modifiable par les corrections` + (e.originalPresumed ? ' · fiche ancienne : le texte présent à la première ouverture fait office d\'original' : '') }),
+        h('div', { class: 'pview doc', style: { maxHeight: '160px', overflow: 'auto' }, text: (e.original || '').slice(0, 1200) + ((e.original || '').length > 1200 ? '…' : '') }),
+        h('button', { class: 'btn small', style: { marginTop: '10px' }, onclick: () => ed.menu() }, icon('plus'), h('span', { text: 'Ajouter ou remplacer du texte' }))));
+    }
+    wrap.append(docCard());
+    return wrap;
+  }
+
+  // --- 2. Corriger et protéger ---
+  function stepCorriger() {
+    const wrap = h('div', {});
+    S.ensureOriginal(e);
+    const seg = h('div', { class: 'seg', style: { marginBottom: '12px' } }, [['corrige', 'Corrigé'], ['protege', 'Protégé'], ['original', 'Original']].map(([id, l]) => h('button', { class: corrView === id ? 'on' : '', text: l, onclick: () => { corrView = id; renderBody(); } })));
+    wrap.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: 'Corrigez les erreurs de transcription, puis vérifiez les éléments masqués. L\'original n\'est jamais remplacé par la version corrigée ou protégée.' }), seg);
+    if (!S.hasTranscript(e)) { wrap.append(empty('Aucune transcription', 'Revenez à l\'étape 1 pour ajouter le texte.')); return wrap; }
+    if (corrView === 'corrige') {
+      const ed = transcriptEditor();
+      wrap.append(h('div', { class: 'banner', style: { marginTop: 0 } }, icon('info'), h('div', { text: 'Vous modifiez la version corrigée. Le bouton « Corriger » applique aussi votre vocabulaire (aperçu et prudence sur les noms propres). Les versions précédentes restent consultables.' })), ed.el);
+    } else if (corrView === 'protege') {
+      wrap.append(protectHolder());
+    } else {
+      wrap.append(h('div', { class: 'card' }, h('div', { class: 'eyebrow', text: 'Transcription originale (lecture seule)' }),
+        h('div', { class: 'pview doc', style: { whiteSpace: 'pre-wrap', marginTop: '8px' }, text: e.original || S.transcriptOf(e) }),
+        h('button', { class: 'btn small', style: { marginTop: '12px' }, onclick: async () => {
+          if (!(await confirmDialog({ title: 'Repartir de l\'original ?', confirmLabel: 'Remplacer la version corrigée', message: 'La version corrigée actuelle sera remplacée par l\'original. Elle reste dans « Versions précédentes ».' }))) return;
+          const ed = transcriptEditor(); const ok = await ed.apply(e.original || '', 'rétablissement', 'original');
+          if (ok) { toast('Version corrigée remise à l\'original'); corrView = 'corrige'; renderBody(); }
+        } }, icon('back'), h('span', { text: 'Repartir de l\'original' }))));
+    }
+    return wrap;
+  }
+
+  // --- 3. Trame ---
+  function stepTrame() {
+    const wrap = h('div', {});
+    wrap.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: 'Choisissez le type de compte rendu. La trame fixe les rubriques et les consignes de rédaction envoyées avec le texte protégé.' }));
+    const PRIORITY = ['suivi patrimonial', 'premier rendez-vous', 'reunion interne', 'webinaire'];
+    const rank = (t) => { const n = t.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''); const i = PRIORITY.findIndex((p) => n.includes(p)); return i < 0 ? 99 : i; };
+    const list = templates.slice().sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, 'fr'));
+    for (const t of list) {
+      const sel = e.templateId === t.id;
+      wrap.append(h('div', { class: 'card tplcard' + (sel ? ' on' : ''), style: { marginTop: '10px' } },
+        h('div', { style: { display: 'flex', gap: '10px', alignItems: 'center' } },
+          h('div', { class: 'grow' }, h('div', { style: { fontWeight: '700', color: 'var(--ink)' }, text: t.name }), h('div', { class: 'hint', style: { margin: '2px 0 0' }, text: `${t.sections.length} rubrique${t.sections.length > 1 ? 's' : ''} · ${t.builtin ? 'trame intégrée' : 'ma trame'}` })),
+          h('button', { class: 'btn small ' + (sel ? 'primary' : ''), 'aria-pressed': String(sel), text: sel ? '✓ Choisie' : 'Choisir', onclick: () => { e.templateId = t.id; edit(); renderBody(); } })),
+        h('details', { class: 'evid' }, h('summary', { text: 'Voir les rubriques' }), h('ol', { class: 'plain' }, t.sections.map((x) => h('li', { text: x.title })))),
+        h('a', { class: 'hint', href: '#/trame/' + t.id, style: { display: 'inline-block', marginTop: '6px' }, onclick: async () => { await saver.flush(); }, text: 'Modifier cette trame' })));
+    }
+    wrap.append(h('a', { class: 'btn small', style: { marginTop: '14px' }, href: '#/trames' }, icon('template'), h('span', { text: 'Gérer toutes mes trames' })));
+    return wrap;
+  }
+
+  // --- 4. Ouvrir dans ChatGPT ---
+  function stepChatgpt() {
+    const wrap = h('div', {}, h('p', { class: 'hint', style: { marginTop: 0 }, text: 'Le texte protégé est copié dans le presse-papiers avec la trame et les consignes, puis ChatGPT s\'ouvre. Vous collez et envoyez vous-même : l\'application n\'envoie rien.' }));
+    const out = h('div', {}, h('p', { class: 'hint', text: 'Préparation du texte protégé…' }));
+    wrap.append(out);
+    (async () => {
+      let r;
+      try { const { runProtect } = await import('./protect-ui.js'); r = await runProtect(e); }
+      catch (err) { out.replaceChildren(h('div', { class: 'banner warn' }, icon('info'), h('div', { text: 'Analyse impossible : ' + (err.message || err) + '. Votre transcription n\'est pas modifiée.' }))); return; }
+      const { res, ctx } = r; const { hashText } = await import('./protect-ui.js');
+      const tpl = templates.find((x) => x.id === e.templateId) || null;
+      const todo = res.spans.filter((s) => !s.silent && s.certainty === 'maybe' && s.decision !== 'keep');
+      const prompt = tpl ? ctx.exp.buildPrompt({ template: tpl, categoryLabel: e.category ? catLabel(e.category) : '', protectedText: res.protectedText }) : '';
+      const leaks = tpl ? ctx.eng.leakCheck(prompt, res.spans, (e.protect && e.protect.sheet) || {}).filter((l) => l.kind === 'oubli') : [];
+      const titleLeak = !!(tpl && e.title && e.title.length > 4 && prompt.toLowerCase().includes(e.title.toLowerCase()));
+      const reviewed = !!(e.protect && e.protect.reviewedAt && e.protect.reviewHash === hashText(res.protectedText));
+      const checks = [
+        [S.hasTranscript(e), 'Transcription présente', 'importer', 'Ajoutez la transcription (étape 1).'],
+        [!!tpl, tpl ? `Trame choisie : ${tpl.name}` : 'Trame choisie', 'trame', 'Choisissez une trame (étape 3).'],
+        [todo.length === 0, todo.length ? `${todo.length} élément${todo.length > 1 ? 's' : ''} à vérifier` : 'Aucun élément à vérifier', 'corriger', `Il reste ${todo.length} élément(s) à vérifier : décidez-les (étape 2).`],
+        [reviewed, 'Texte protégé relu et validé', 'corriger', 'La revue du texte protégé n\'est pas validée, ou le texte a changé depuis (étape 2).'],
+        [!leaks.length && !titleLeak, leaks.length || titleLeak ? 'Information masquée encore présente dans le texte' : 'Aucune information masquée dans le texte à copier', 'corriger', 'Une information masquée figure encore dans le texte à copier : masquez-la (étape 2).'],
+      ];
+      const blocked = checks.filter((c) => !c[0]);
+      const list = h('ul', { class: 'checklist' }, checks.map((c) => h('li', { class: c[0] ? 'ok' : 'ko' }, icon(c[0] ? 'check' : 'info'), h('span', { text: c[1] }))));
+      const copied = e.protect && e.protect.copiedAt;
+      const doExport = (open) => {
+        ctx.exp && sheet({ title: open ? 'Ouvrir dans ChatGPT' : 'Copier le texte', build(b, close) {
+          b.append(h('div', { class: 'banner warn', style: { marginTop: 0 } }, icon('shield'), h('div', {}, h('b', { text: 'Ce texte est pseudonymisé, pas anonyme.' }), h('div', { text: 'Il peut encore permettre de reconnaître une personne. Vérifiez que les règles de confidentialité d\'Ade-ci autorisent son utilisation avec ChatGPT et que le compte utilisé n\'entraîne pas ses modèles sur vos conversations.' }))),
+            h('ul', { class: 'plain', style: { margin: '12px 0' } }, ctx.exp.AVERTISSEMENT_COPIE.map((t) => h('li', { text: t }))),
+            h('p', { class: 'hint', text: `Contenu copié : consignes de rédaction, trame « ${tpl.name} » et transcription corrigée et pseudonymisée (${res.protectedText.length.toLocaleString('fr-FR')} caractères). Aucune table de correspondance, aucune information masquée.` }));
+          const ok = h('input', { type: 'checkbox' });
+          const go1 = h('button', { class: 'btn primary', disabled: true, onclick: () => {
+            // copie ET ouverture dans le même geste (exigence des navigateurs) ; rien n'est envoyé par l'application
+            const p = copyText(prompt);
+            if (open) { try { window.open(CHATGPT_URL, '_blank', 'noopener,noreferrer'); } catch {} }
+            close();
+            p.then((done) => {
+              if (!done) { toast('Copie impossible : le navigateur a refusé l\'accès au presse-papiers.', 6000); return; }
+              e.protect.copiedAt = Date.now(); edit();
+              toast('Texte copié. Collez-le dans ChatGPT pour générer votre compte rendu.', 8000);
+              renderBody();
+            });
+          } }, icon(open ? 'share' : 'copy'), h('span', { text: open ? 'Copier et ouvrir ChatGPT' : 'Copier le texte' }));
+          ok.addEventListener('change', () => { go1.disabled = !ok.checked; });
+          b.append(h('label', { class: 'check' }, ok, h('span', { text: 'Je confirme avoir relu le texte protégé et être autorisé(e) à l\'utiliser avec ChatGPT (règles de confidentialité d\'Ade-ci).' })),
+            h('div', { class: 'sheet-actions' }, go1, h('button', { class: 'btn', text: 'Annuler', onclick: close })));
+        } });
+      };
+      const mainBtn = h('button', { class: 'btn primary bigpaste', disabled: blocked.length > 0, onclick: () => doExport(true) }, icon('share'), h('span', { text: 'Ouvrir dans ChatGPT' }));
+      const copyBtn = h('button', { class: 'btn', disabled: blocked.length > 0, onclick: () => doExport(false) }, icon('copy'), h('span', { text: 'Copier uniquement' }));
+      out.replaceChildren(h('div', { class: 'card' }, h('div', { class: 'rt serif', style: { fontSize: '19px', color: 'var(--ink)' }, text: 'Vérifications avant l\'envoi' }), list),
+        blocked.length ? h('div', { class: 'banner warn' }, icon('info'), h('div', {}, h('b', { text: 'Bouton bloqué : ' }), blocked.map((c) => h('div', {}, h('span', { text: c[3] + ' ' }), h('a', { href: 'javascript:void(0)', text: 'Y aller', onclick: () => goStep(c[2]) }))))) : null,
+        h('div', { style: { height: '14px' } }), mainBtn, h('div', { style: { height: '8px' } }), copyBtn,
+        copied ? h('div', { class: 'banner', style: { marginTop: '14px' } }, icon('check'), h('div', {}, h('div', { text: 'Texte copié le ' + fmtDateTime(e.protect.copiedAt) + '. Collez-le dans ChatGPT pour générer votre compte rendu.' }),
+          h('a', { href: CHATGPT_URL, target: '_blank', rel: 'noopener noreferrer', text: 'Si ChatGPT ne s\'est pas ouvert, touchez ici.' }))) : null,
+        tpl ? h('details', { class: 'evid', style: { marginTop: '14px' } }, h('summary', { text: 'Voir le texte qui sera copié' }), h('pre', { class: 'pview doc', style: { whiteSpace: 'pre-wrap' }, text: prompt })) : null);
+    })();
+    return wrap;
+  }
+
+  // --- 5. Compte rendu ---
+  const normTitle = (t) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  // Découpe le texte collé en rubriques d'après les titres de la trame (aucune ligne n'est perdue).
+  function splitReport(text, tpl) {
+    const keys = (tpl ? tpl.sections : []).map((s) => normTitle(s.title));
+    const lines = text.replace(/\r\n?/g, '\n').split('\n');
+    const out = []; let cur = { title: null, lines: [] }; const pre = [];
+    const used = new Set();
+    for (const ln of lines) {
+      const bare = ln.replace(/^\s*(?:#{1,6}|\d+[.)]|[-*•])\s*/, '').replace(/[*_`]/g, '').trim();
+      const head = normTitle(bare.split(/[:：]/)[0]);
+      const idx = bare.length <= 140 ? keys.findIndex((k, i) => k && !used.has(i) && head === k) : -1;
+      if (idx >= 0) {
+        used.add(idx); if (cur.title !== null || cur.lines.length) out.push(cur);
+        const rest = /[:：]/.test(bare) ? bare.slice(bare.search(/[:：]/) + 1).trim() : '';
+        cur = { title: tpl.sections[idx].title, lines: rest ? [rest] : [] };
+      } else cur.lines.push(ln);
+    }
+    out.push(cur);
+    const sections = [], preamble = [];
+    for (const c of out) { const content = c.lines.join('\n').replace(/^\s+|\s+$/g, ''); if (c.title === null) { if (content) preamble.push(content); } else sections.push({ title: c.title, content }); }
+    return { sections, preamble: preamble.join('\n\n'), found: sections.length };
+  }
+  function pasteReportBlock(refresh) {
+    const ta = h('textarea', { class: 'textarea', rows: '6', placeholder: 'Collez ici le compte rendu généré par ChatGPT…', 'aria-label': 'Compte rendu collé', spellcheck: 'false' });
+    const pasteBtn = h('button', { class: 'btn small', onclick: async () => { try { const t = await navigator.clipboard.readText(); if (!t.trim()) return toast('Le presse-papiers est vide.'); ta.value = t; } catch { toast('Appuyez longuement dans la zone, puis « Coller ».', 4200); ta.focus(); } } }, icon('clipboard'), h('span', { text: 'Coller le presse-papiers' }));
+    const importBtn = h('button', { class: 'btn primary', onclick: () => {
+      const text = ta.value.trim(); if (!text) return toast('Collez d\'abord le compte rendu.');
+      const tpl = templates.find((x) => x.id === e.templateId) || null;
+      const sp = splitReport(text, tpl);
+      sheet({ title: 'Importer le compte rendu', build(b, close) {
+        const items = sp.found ? sp.sections : [{ title: 'Compte rendu', content: text }];
+        b.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: sp.found ? `${sp.found} rubrique${sp.found > 1 ? 's' : ''} reconnue${sp.found > 1 ? 's' : ''} d'après la trame « ${tpl.name} ». Vérifiez, puis importez ; vous pourrez tout modifier ensuite.` : 'Aucun titre de la trame n\'a été reconnu : le texte entier sera placé dans une seule rubrique « Compte rendu » (modifiable).' }),
+          ...(sp.preamble && sp.found ? [h('div', { class: 'banner', style: { marginTop: 0 } }, icon('info'), h('div', { text: 'Le texte placé avant la première rubrique sera conservé dans une rubrique « Introduction ».' }))] : []),
+          ...items.map((x) => h('div', { class: 'card', style: { marginTop: '8px' } }, h('div', { style: { fontWeight: '600', color: 'var(--ink)' }, text: x.title }), h('div', { class: 'hint', style: { margin: '2px 0 0' }, text: `${x.content.length.toLocaleString('fr-FR')} caractères` }))));
+        if (S.hasReport(e)) b.append(h('p', { class: 'hint', text: 'Le compte rendu actuel est conservé dans « Compte rendu précédent » (rétablissement possible).' }));
+        b.append(h('div', { class: 'sheet-actions' },
+          h('button', { class: 'btn primary', text: 'Importer dans la fiche', onclick: async () => {
+            if (S.hasReport(e)) e.reportHistory = S.pushHistory(e.reportHistory, { text: JSON.stringify(e.reportSections || []), reason: 'avant import ChatGPT' });
+            const secs = (sp.found ? sp.sections : [{ title: 'Compte rendu', content: text }]).map((x) => ({ id: S.uid('r'), title: x.title, content: x.content }));
+            if (sp.found && sp.preamble) secs.unshift({ id: S.uid('r'), title: 'Introduction', content: sp.preamble });
+            // les rubriques de la trame non retrouvées restent présentes, vides, à rédiger
+            if (tpl && sp.found) for (const ts of tpl.sections) if (!secs.some((x) => normTitle(x.title) === normTitle(ts.title))) secs.push({ id: S.uid('r'), title: ts.title, content: '' });
+            e.reportSections = secs; e.namesRestored = false; delete e.iaInfo;
+            edit(); await saver.flush(); close(); toast('Compte rendu importé'); refresh();
+          } }), h('button', { class: 'btn', text: 'Annuler', onclick: close })));
+      } });
+    } }, icon('check'), h('span', { text: 'Importer dans les rubriques' }));
+    const restoreBtn = h('button', { class: 'btn small', onclick: () => restoreNamesFlow(refresh) }, icon('user'), h('span', { text: 'Remettre les vrais noms (facultatif)' }));
+    return h('div', { class: 'card' }, h('div', { class: 'rt serif', style: { fontSize: '19px', color: 'var(--ink)' }, text: 'Coller le compte rendu de ChatGPT' }),
+      h('p', { class: 'hint', text: 'Collez la réponse de ChatGPT. Elle est découpée en rubriques d\'après la trame choisie, puis vous pouvez la relire et la modifier.' }), ta,
+      h('div', { class: 'btn-row', style: { marginTop: '10px' } }, pasteBtn, importBtn), h('div', { style: { height: '8px' } }), S.hasReport(e) ? restoreBtn : null);
+  }
+  // Réintégration LOCALE et facultative des identités : étiquette → nom d'origine, avec aperçu et vérification avant export. La table ne quitte jamais l'appareil.
+  async function restoreNamesFlow(refresh) {
+    try {
+      const { runProtect, labelTable } = await import('./protect-ui.js');
+      const { res } = await runProtect(e); const table = labelTable(res);
+      const all = (e.reportSections || []).map((x) => x.content || '').join('\n');
+      const pairs = [...table.entries()].filter(([lab]) => new RegExp('(?<![\\p{L}\\p{N}])' + lab.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\p{L}\\p{N}])', 'u').test(all)).sort((a, b) => b[0].length - a[0].length);
+      sheet({ title: 'Remettre les vrais noms', build(b, close) {
+        if (!pairs.length) { b.append(h('p', { class: 'hint', text: 'Aucune étiquette reconnue dans ce compte rendu (par exemple « Client A »). Rien à remettre.' }), h('button', { class: 'btn', text: 'Fermer', onclick: close })); return; }
+        b.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: 'Aperçu : les étiquettes ci-dessous seront remplacées par les noms d\'origine, localement. ChatGPT peut avoir reformulé certaines étiquettes : celles-ci ne seront pas retrouvées.' }),
+          ...pairs.map(([lab, orig]) => h('div', { class: 'kv' }, h('span', { text: lab }), h('b', { text: orig }))),
+          h('div', { class: 'banner warn' }, icon('shield'), h('div', { text: 'Après remplacement, le compte rendu contient des noms réels : n\'exportez-le qu\'à des destinataires autorisés. Une vérification vous sera demandée avant tout export.' })),
+          h('div', { class: 'sheet-actions' }, h('button', { class: 'btn primary', text: 'Remettre les noms', onclick: async () => {
+            e.reportHistory = S.pushHistory(e.reportHistory, { text: JSON.stringify(e.reportSections || []), reason: 'avant réintégration des noms' });
+            for (const sec of e.reportSections || []) for (const [lab, orig] of pairs) sec.content = (sec.content || '').replace(new RegExp('(?<![\\p{L}\\p{N}])' + lab.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\p{L}\\p{N}])', 'gu'), () => orig);
+            e.namesRestored = true; edit(); await saver.flush(); close(); toast('Noms remis. Vérifiez le compte rendu avant export.', 5000); refresh();
+          } }), h('button', { class: 'btn', text: 'Annuler', onclick: close })));
+      } });
+    } catch (err) { toast('Impossible : ' + (err.message || err), 5000); }
+  }
+  function stepCompteRendu() {
+    const wrap = h('div', {});
+    const holder = h('div', {});
+    const refresh = () => { holder.replaceChildren(reportTab()); };
+    wrap.append(pasteReportBlock(() => { renderBody(); }), h('div', { style: { height: '14px' } }), holder);
+    refresh();
+    return wrap;
+  }
+
+  // --- assemblage ---
   function renderBody() {
-    tabs.textContent = '';
-    for (const [id, label] of TABS) tabs.append(h('button', { class: tab === id ? 'on' : '', role: 'tab', 'aria-selected': String(tab === id), text: label, onclick: () => { tab = id; renderBody(); } }));
-    body.replaceChildren(tab === 'transcription' ? transcriptTab() : tab === 'proteger' ? protectHolder() : tab === 'compte-rendu' ? reportTab() : infosTab());
+    stepBar.replaceChildren(...STEPS.map(([id, label, short], i) => h('button', { class: (step === id ? 'on ' : '') + (doneOf(id) ? 'done' : ''), role: 'tab', 'aria-selected': String(step === id), 'aria-label': `Étape ${i + 1} : ${label}${doneOf(id) ? ' (terminée)' : ''}`, onclick: () => goStep(id) },
+      h('b', { text: doneOf(id) && step !== id ? '✓' : String(i + 1) }), h('span', { class: 'lbl-s', text: short }), h('span', { class: 'lbl-l', text: label }))));
+    const idx = stepIds.indexOf(step);
+    body.replaceChildren(step === 'infos' ? h('div', {}, h('button', { class: 'btn small', style: { marginBottom: '12px' }, onclick: () => goStep(S.stepOf(e) === 'termine' ? 'compte-rendu' : (stepIds.includes(S.stepOf(e)) ? S.stepOf(e) : 'importer')) }, icon('back'), h('span', { text: 'Retour au parcours' })), infosTab())
+      : step === 'importer' ? stepImporter() : step === 'corriger' ? stepCorriger() : step === 'trame' ? stepTrame() : step === 'chatgpt' ? stepChatgpt() : stepCompteRendu());
+    stepNav.replaceChildren();
+    if (idx >= 0) {
+      if (idx > 0) stepNav.append(h('button', { class: 'btn', 'aria-label': 'Étape précédente : ' + STEPS[idx - 1][1], onclick: () => goStep(stepIds[idx - 1]) }, icon('back'), h('span', { text: 'Retour' })));
+      if (idx < stepIds.length - 1) stepNav.append(h('button', { class: 'btn primary', 'aria-label': 'Étape suivante : ' + STEPS[idx + 1][1], onclick: () => goStep(stepIds[idx + 1]) }, h('span', { text: 'Continuer' }), icon('chevron')));
+    }
   }
   renderBody();
 
   const el = h('div', { class: 'view' },
     topbar({ back: async () => { await saver.flush(); go('#/bibliotheque' + (e.category ? '?cat=' + e.category + (e.folderId ? '&f=' + e.folderId : '') : '')); }, backLabel: 'Bibliothèque',
-      right: h('button', { class: 'btn small', onclick: shareMenu }, icon('share'), h('span', { text: 'Partager' })) }),
+      right: h('div', { style: { display: 'flex', gap: '8px' } },
+        h('button', { class: 'iconbtn', 'aria-label': 'Informations et options de la fiche', title: 'Informations et options', onclick: () => goStep('infos') }, icon('gear')),
+        h('button', { class: 'btn small', onclick: shareMenu }, icon('share'), h('span', { text: 'Partager' }))) }),
     titleInp, meta, saveState,
-    S.hasAudio(e) ? audioCard() : null,
-    tabs, body);
-  return { el, dispose: async () => { await saver.dispose(); cleanups.forEach((f) => f()); } };
+    audioOn() ? audioCard() : null,
+    stepBar, body, stepNav);  return { el, dispose: async () => { await saver.dispose(); cleanups.forEach((f) => f()); } };
 }

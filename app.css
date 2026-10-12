@@ -52,7 +52,7 @@ html.kbd .tabbar { opacity: 0; pointer-events: none; transform: translate3d(0, 1
 html.kbd .stickybar { bottom: 0; }
 html.kbd #app { padding-bottom: 28px; }
 html.kbd #toast { bottom: 22px; }
-.tabbar nav { max-width: 720px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr 1.1fr 1fr 1fr; align-items: end; }
+.tabbar nav { max-width: 720px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr 1.1fr 1fr; align-items: end; }
 .tab { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border: 0; background: none; color: #7D786E; font-size: 10.5px; font-weight: 600; text-decoration: none; min-height: 48px; }
 .tab.on { color: var(--teal); }
 .tab .l-d { display: none; }
@@ -378,3 +378,40 @@ html.kbd .update-banner { display: none; }
 .lock-box .field { text-align: center; }
 .linkbtn { background: none; border: 0; color: var(--teal); font: inherit; font-size: 13.5px; text-decoration: underline; padding: 14px 6px; min-height: 44px; cursor: pointer; }
 .reckey { font: 700 19px/1.5 ui-monospace, Menlo, Consolas, monospace; letter-spacing: .04em; text-align: center; background: var(--surface); border: 1px dashed var(--line); border-radius: var(--r-sm); padding: 16px 10px; margin: 12px 0; color: var(--ink); user-select: all; word-break: break-all; }
+
+/* ----- Corbeille, sélection multiple, parcours ----- */
+.toast-act { background: transparent; border: 1px solid rgba(246, 240, 231, .6); color: #F6F0E7; border-radius: 999px; padding: 4px 12px; margin-left: 6px; font: inherit; font-weight: 700; cursor: pointer; }
+.row .selbox { width: 24px; height: 24px; border-radius: 8px; border: 2px solid var(--line); flex: none; display: grid; place-items: center; background: var(--surface); }
+.row .selbox.on { background: var(--teal); border-color: var(--teal); color: var(--on-teal); }
+.row .selbox svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 3; }
+.selbar { position: sticky; bottom: calc(var(--tab-h) + 12px + env(safe-area-inset-bottom)); z-index: 20; display: flex; gap: 10px; align-items: center; background: var(--navy); color: #F6F0E7; padding: 10px 12px; border-radius: 18px; margin-top: 14px; box-shadow: var(--shadow); }
+.selbar span { flex: 1; font-weight: 600; }
+.selbar .btn { width: auto; min-height: 44px; }
+.trash-item { margin-top: 10px; }
+.trash-item .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.trash-item .acts .btn { width: auto; flex: 1; min-width: 130px; }
+
+/* ----- Parcours guidé en 5 étapes ----- */
+.steps { display: flex; gap: 6px; margin: 16px 0 14px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+.steps::-webkit-scrollbar { display: none; }
+.steps button { flex: 1 0 auto; min-width: 64px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: inherit; font-size: 11.5px; line-height: 1.15; cursor: pointer; min-height: 56px; }
+.steps button b { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--line); color: var(--ink); font-size: 13px; }
+.steps button.on { border-color: var(--teal); color: var(--ink); background: color-mix(in srgb, var(--teal) 10%, var(--surface)); }
+.steps button.on b { background: var(--teal); color: var(--on-teal); }
+.steps button.done b { background: color-mix(in srgb, var(--teal) 25%, var(--surface)); color: var(--teal); }
+.steps button.on.done b { background: var(--teal); color: var(--on-teal); }
+@media (min-width: 700px) { .steps button { flex-direction: row; justify-content: center; font-size: 13.5px; } }
+.stepnav { position: sticky; bottom: calc(var(--tab-h) + 8px + env(safe-area-inset-bottom)); z-index: 15; display: flex; gap: 10px; margin-top: 22px; padding: 10px 0 2px; background: linear-gradient(to top, var(--bg) 70%, transparent); }
+.stepnav .btn { flex: 1; }
+.checklist { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.checklist li { display: flex; gap: 10px; align-items: flex-start; font-size: 14.5px; }
+.checklist li svg { width: 20px; height: 20px; flex: none; margin-top: 1px; stroke: currentColor; fill: none; stroke-width: 2.5; }
+.checklist li.ok { color: var(--ink); } .checklist li.ok svg { color: var(--teal); }
+.checklist li.ko { color: var(--danger); }
+.tplcard.on { border-color: var(--teal); box-shadow: 0 0 0 2px color-mix(in srgb, var(--teal) 30%, transparent); }
+.bigpaste { width: 100%; min-height: 56px; font-size: 17px; }
+.steps button .lbl-l { display: none; }
+.steps button { flex: 1 1 0; min-width: 0; padding: 8px 2px; font-size: 11px; }
+@media (min-width: 700px) { .steps button .lbl-s { display: none; } .steps button .lbl-l { display: inline; } }
+.stepnav .btn { min-height: 52px; font-size: 16px; }
+.tools { flex-wrap: wrap; row-gap: 8px; }

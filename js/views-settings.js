@@ -94,17 +94,25 @@ export async function settingsView({ query }) {
           obj = B.parseFile(await B.decryptEnvelope(obj, pw)).obj;
         }
         const clean = B.sanitize(obj);
-        const plan = await B.planRestore(clean);
-        const nAdd = plan.addSessions.length, nCopy = plan.copySessions.length;
+        let plan = await B.planRestore(clean);
+        const nAdd = () => plan.addSessions.length, nCopy = () => plan.copySessions.length;
+        const noteBox = h('div', {});
+        const drawNotes = () => noteBox.replaceChildren(
+          plan.trashedInBackup ? h('p', { class: 'hint', text: `${plan.trashedInBackup} élément(s) de la sauvegarde étaient dans la corbeille : ils seront restaurés dans la corbeille de cet appareil.` }) : null,
+          plan.ignoredInTrash ? h('p', { class: 'hint', text: `${plan.ignoredInTrash} élément(s) sont dans la corbeille de cet appareil : ils ne sont ni ressuscités ni dupliqués (restaurez-les depuis la Corbeille).` }) : null,
+          plan.ignoredPurged ? h('div', { class: 'banner', style: { marginTop: '8px' } }, icon('info'), h('div', {}, h('div', { text: `${plan.ignoredPurged} élément(s) ont été supprimés définitivement de cet appareil depuis cette sauvegarde : ils ne seront pas réintroduits.` }),
+            h('label', { class: 'check' }, h('input', { type: 'checkbox', onchange: async (ev) => { plan = await B.planRestore(clean, { reviveDeleted: ev.target.checked }); drawNotes(); } }), h('span', { text: 'Les restaurer quand même' })))) : null);
+        drawNotes();
         sheet({ title: 'Restaurer cette sauvegarde ?', build(body, close) {
           body.append(
             h('p', { class: 'sheet-msg', text: `Sauvegarde du ${obj.exportedAt ? new Date(obj.exportedAt).toLocaleDateString('fr-FR') : '—'}, vérifiée.` }),
             h('div', { class: 'card' }, h('div', { class: 'info-grid' },
-              ...[['Entretiens ajoutés', nAdd], ['Copies créées (version différente déjà présente)', nCopy], ['Dossiers ajoutés', plan.addFolders.length], ['Documents importés restaurés', plan.originalsAdd.length], ['Trames ajoutées', plan.addTemplates.length + plan.copyTemplates.length], ['Éléments déjà présents (ignorés)', plan.skipped]]
+              ...[['Entretiens ajoutés', nAdd()], ['Copies créées (version différente déjà présente)', nCopy()], ['Dossiers ajoutés', plan.addFolders.length], ['Documents importés restaurés', plan.originalsAdd.length], ['Trames ajoutées', plan.addTemplates.length + plan.copyTemplates.length], ['Éléments déjà présents (ignorés)', plan.skipped]]
                 .map(([k, v]) => h('div', { class: 'kv' }, h('span', { text: k }), h('span', { text: String(v) }))))),
+            noteBox,
             h('p', { class: 'hint', text: 'Rien de ce qui est déjà sur cet appareil ne sera écrasé ni supprimé.' + (plan.audioMissing ? ` ${plan.audioMissing} entretien(s) avaient un audio : il n'est pas inclus dans la sauvegarde.` : '') }),
             h('div', { class: 'sheet-actions' },
-              h('button', { class: 'btn primary', text: 'Restaurer', disabled: !(nAdd + nCopy + plan.addFolders.length + plan.addTemplates.length + plan.copyTemplates.length + plan.vocabAdd.length + plan.originalsAdd.length + plan.enrichProtect.length + (plan.protectGlobal ? 1 : 0)), onclick: async () => { await B.applyRestore(plan); toast('Sauvegarde restaurée'); close(); render(); } }),
+              h('button', { class: 'btn primary', text: 'Restaurer', disabled: !(nAdd() + nCopy() + plan.addFolders.length + plan.addTemplates.length + plan.copyTemplates.length + plan.vocabAdd.length + plan.originalsAdd.length + plan.enrichProtect.length + (plan.protectGlobal ? 1 : 0)), onclick: async () => { await B.applyRestore(plan); toast('Sauvegarde restaurée'); close(); render(); } }),
               h('button', { class: 'btn', text: 'Annuler', onclick: close })));
         } });
       } catch (err) { toast(err.message, 6000); }
@@ -139,6 +147,7 @@ export async function settingsView({ query }) {
         h('div', { class: 'card' }, h('div', { class: 'info-grid' },
           row('Entretiens', inv.sessions + (inv.unreadable ? ` (dont ${inv.unreadable} illisible(s))` : '')), row('avec transcription', inv.withTranscript), row('avec compte rendu', inv.withReport), row('Mots de transcription', inv.words),
           row('Dossiers', inv.folders), row('Trames', `${inv.templates} (dont ${inv.customTemplates} personnalisée(s))`),
+          row('Dans la corbeille', `${inv.trashedFiches} fiche(s), ${inv.trashedFolders} dossier(s), ${inv.trashedParts} fiche(s) avec un élément retiré`),
           row('Fiches d\'identité de pseudonymisation', inv.protectSheets), row('Décisions manuelles', inv.protectDecisions),
           row('Vocabulaire personnalisé', inv.vocab), row('Dictionnaire et listes de protection', inv.protectDict + inv.protectLists),
           row('Documents importés', `${inv.documents} (${mo(inv.documentBytes)})`),
@@ -197,14 +206,16 @@ export async function settingsView({ query }) {
           h('div', { class: 'btn-row', style: { marginTop: '10px' } },
             h('button', { class: 'btn primary', onclick: backupFlow }, icon('share'), h('span', { text: 'Sauvegarder' })),
             h('button', { class: 'btn', onclick: restoreFlow }, icon('archive'), h('span', { text: 'Restaurer' }))),
-          h('button', { class: 'btn', style: { marginTop: '10px' }, onclick: inventorySheet }, icon('clipboard'), h('span', { text: 'Inventaire avant migration' })))),
+          h('button', { class: 'btn', style: { marginTop: '10px' }, onclick: inventorySheet }, icon('clipboard'), h('span', { text: 'Inventaire avant migration' })),
+          h('a', { class: 'btn', style: { marginTop: '10px' }, href: '#/corbeille' }, icon('trash'), h('span', { text: 'Corbeille' })))),
 
       group('Sécurité', securityNode),
       h('div', { class: 'settings-group' }, vocabAccordion()),
       group('Apparence', themeBlock()),
 
       advancedNodes.ia ? h('div', { class: 'settings-group' }, advancedNodes.ia) : null,
-      group('Fonctions avancées', advancedBlock()),
+      h('details', { class: 'settings-group evid' }, h('summary', { text: 'Options avancées (outils de test)' }),
+        h('p', { class: 'hint', text: 'Anciennes fonctions de laboratoire : IA locale, enregistrement et transcription de test. Elles ne font pas partie du parcours normal et sont masquées par défaut.' }), advancedBlock()),
 
       group('Confidentialité',
         h('div', { class: 'card' }, h('ul', { class: 'plain', style: { marginTop: 0 } },
