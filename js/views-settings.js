@@ -97,11 +97,11 @@ export async function settingsView({ query }) {
         let plan = await B.planRestore(clean);
         const nAdd = () => plan.addSessions.length, nCopy = () => plan.copySessions.length;
         const noteBox = h('div', {});
-        const drawNotes = () => noteBox.replaceChildren(
+        const drawNotes = () => noteBox.replaceChildren(...[
           plan.trashedInBackup ? h('p', { class: 'hint', text: `${plan.trashedInBackup} élément(s) de la sauvegarde étaient dans la corbeille : ils seront restaurés dans la corbeille de cet appareil.` }) : null,
           plan.ignoredInTrash ? h('p', { class: 'hint', text: `${plan.ignoredInTrash} élément(s) sont dans la corbeille de cet appareil : ils ne sont ni ressuscités ni dupliqués (restaurez-les depuis la Corbeille).` }) : null,
           plan.ignoredPurged ? h('div', { class: 'banner', style: { marginTop: '8px' } }, icon('info'), h('div', {}, h('div', { text: `${plan.ignoredPurged} élément(s) ont été supprimés définitivement de cet appareil depuis cette sauvegarde : ils ne seront pas réintroduits.` }),
-            h('label', { class: 'check' }, h('input', { type: 'checkbox', onchange: async (ev) => { plan = await B.planRestore(clean, { reviveDeleted: ev.target.checked }); drawNotes(); } }), h('span', { text: 'Les restaurer quand même' })))) : null);
+            h('label', { class: 'check' }, h('input', { type: 'checkbox', onchange: async (ev) => { plan = await B.planRestore(clean, { reviveDeleted: ev.target.checked }); drawNotes(); } }), h('span', { text: 'Les restaurer quand même' })))) : null].filter(Boolean));
         drawNotes();
         sheet({ title: 'Restaurer cette sauvegarde ?', build(body, close) {
           body.append(
@@ -213,7 +213,7 @@ export async function settingsView({ query }) {
       h('div', { class: 'settings-group' }, vocabAccordion()),
       group('Apparence', themeBlock()),
 
-      advancedNodes.ia ? h('div', { class: 'settings-group' }, advancedNodes.ia) : null,
+      ...(advancedNodes.ia ? [h('div', { class: 'settings-group' }, advancedNodes.ia)] : []),
       h('details', { class: 'settings-group evid' }, h('summary', { text: 'Options avancées (outils de test)' }),
         h('p', { class: 'hint', text: 'Anciennes fonctions de laboratoire : IA locale, enregistrement et transcription de test. Elles ne font pas partie du parcours normal et sont masquées par défaut.' }), advancedBlock()),
 

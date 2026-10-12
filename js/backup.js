@@ -4,7 +4,7 @@
 import * as DB from '../db.js';
 import { kv } from './vault.js';
 import { CATEGORIES } from './defaults.js';
-import { listEntretiens, listFolders, listTemplates, uid, getVocab, setVocab, hasAudio, getTombstones, addTombstones } from './store.js';
+import { listEntretiens, listFolders, listTemplates, uid, getVocab, setVocab, hasAudio, getTombstones, addTombstones, hiddenTemplateIds, hasExplicitHidden, setSetting } from './store.js';
 
 export const FORMAT = 'dictaphone-ia-sauvegarde';
 export const FORMAT_ENC = 'dictaphone-ia-sauvegarde-chiffree';
@@ -86,6 +86,7 @@ export async function buildBackup(appVersion, { withProtect = false, withOrigina
     sessions: sessions.map((s) => { const x = { ...s, hadAudio: hasAudio(s) || !!s.hadAudio }; if (!withProtect) delete x.protect; return x; }),
   };
   if (withProtect) { const g = readProtectGlobal(); if (g) out.protectGlobal = g; }
+  if (hasExplicitHidden()) out.hiddenTemplates = hiddenTemplateIds();           // préférence d'affichage des trames (aucune trame n'est supprimée)
   if (withOriginals) {
     const originals = []; let total = 0;
     for (const s of sessions) {
@@ -206,7 +207,8 @@ export function sanitize(obj) {
   const withOrig = new Set(originals.map((o) => o.id));
   for (const s of sessions) if (withOrig.has(s.id)) s.hasOriginal = true;
   const tombstones = (Array.isArray(obj.tombstones) ? obj.tombstones : []).filter((t) => t && idOk(t.id)).slice(0, 5000).map((t) => ({ id: t.id, kind: ['fiche', 'dossier'].includes(t.kind) ? t.kind : 'fiche', at: num(t.at, Date.now()) }));
-  return { folders, templates, sessions, vocab, protectGlobal, originals, tombstones };
+  const hiddenTemplates = Array.isArray(obj.hiddenTemplates) ? obj.hiddenTemplates.filter(idOk).slice(0, 200) : null;
+  return { folders, templates, sessions, vocab, protectGlobal, originals, tombstones, hiddenTemplates };
 }
 
 // Éléments retirés d'une fiche (document, audio, transcription corrigée) : structure validée.
@@ -235,6 +237,7 @@ function cleanProtect(p) {
     },
     overrides: { byText, byPos, labels }, alwaysMask: strList(p.alwaysMask, 500), neverMask: strList(p.neverMask, 500),
     ...(Number.isFinite(p.copiedAt) ? { copiedAt: p.copiedAt } : {}), ...(Number.isFinite(p.reviewedAt) ? { reviewedAt: p.reviewedAt } : {}),
+    ...(typeof p.reviewHash === 'string' ? { reviewHash: p.reviewHash.slice(0, 40) } : {}), ...(p.visited ? { visited: true } : {}), leakAcks: strList(p.leakAcks, 500),
   };
 }
 function cleanProtectGlobal(g) {
@@ -251,7 +254,7 @@ export async function planRestore(clean, { reviveDeleted = false } = {}) {
   const [exS, exF, exT] = await Promise.all([listEntretiens({ all: true }), listFolders({ all: true }), listTemplates()]);
   const tomb = new Set(getTombstones().map((t) => t.id));
   const sById = new Map(exS.map((s) => [s.id, s])), fIds = new Set(exF.map((f) => f.id)), tById = new Map(exT.map((t) => [t.id, t]));
-  const plan = { addFolders: [], addTemplates: [], addSessions: [], copySessions: [], copyTemplates: [], skipped: 0, vocabAdd: [], audioMissing: 0, enrichProtect: [], protectGlobal: clean.protectGlobal || null, originalsAdd: [], enrichOriginal: [], ignoredInTrash: 0, ignoredPurged: 0, tombstones: reviveDeleted ? [] : (clean.tombstones || []), trashedInBackup: 0 };
+  const plan = { addFolders: [], addTemplates: [], addSessions: [], copySessions: [], copyTemplates: [], skipped: 0, vocabAdd: [], audioMissing: 0, enrichProtect: [], protectGlobal: clean.protectGlobal || null, originalsAdd: [], enrichOriginal: [], ignoredInTrash: 0, ignoredPurged: 0, tombstones: reviveDeleted ? [] : (clean.tombstones || []), trashedInBackup: 0, hiddenTemplates: clean.hiddenTemplates || null };
   const origBy = new Map((clean.originals || []).map((o) => [o.id, o]));
   for (const f of clean.folders) {
     if (fIds.has(f.id)) plan.skipped++;
@@ -299,6 +302,8 @@ export async function applyRestore(plan) {
     if (o.attach) { const cur = await DB.getSession(o.id); if (cur && !cur._unreadable) { cur.hasOriginal = true; await DB.putSession(cur); } }
   }
   if (plan.vocabAdd.length) setVocab([...getVocab(), ...plan.vocabAdd]);
+  // préférence d'affichage des trames : reprise seulement si cet appareil n'a pas déjà fait son propre choix
+  if (plan.hiddenTemplates && !hasExplicitHidden()) setSetting('hiddenTemplates', plan.hiddenTemplates);
   // pierres tombales de la sauvegarde : fusionnées (un élément supprimé définitivement le reste)
   if (plan.tombstones && plan.tombstones.length) addTombstones(plan.tombstones);
   // original immuable : ajouté aux fiches existantes qui n'en ont pas, jamais écrasé

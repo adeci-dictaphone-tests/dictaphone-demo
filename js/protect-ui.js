@@ -1,6 +1,6 @@
 // Onglet « Protéger » d'une fiche : pseudonymisation locale de la transcription, relecture obligatoire, copie pour une IA externe.
 // Ce module (et le moteur js/protect/*) n'est chargé qu'à l'ouverture de l'onglet. Rien n'est envoyé par l'application.
-import { h, icon, toast, sheet, promptDialog } from './ui.js';
+import { h, icon, toast, sheet, promptDialog, confirmDialog } from './ui.js';
 import * as S from './store.js';
 import { kv } from './vault.js';
 import { copyText } from './exports.js';
@@ -41,7 +41,7 @@ async function loadEngine() {
   return loaded;
 }
 export function defaultProtect() {
-  return { v: 1, level: 'renforce', sheet: { persons: [], employers: [], companies: [], cities: [], addresses: [], others: [] }, overrides: { byText: {}, byPos: {}, labels: {} }, alwaysMask: [], neverMask: [] };
+  return { v: 1, level: 'renforce', sheet: { persons: [], employers: [], companies: [], cities: [], addresses: [], others: [] }, overrides: { byText: {}, byPos: {}, labels: {} }, alwaysMask: [], neverMask: [], leakAcks: [] };
 }
 const lines = (s) => s.split(/\n+/).map((x) => x.trim()).filter(Boolean);
 
@@ -54,7 +54,7 @@ export async function runProtect(e) {
   const P = e.protect;
   P.sheet = { ...defaultProtect().sheet, ...(P.sheet || {}) };
   P.overrides = { byText: {}, byPos: {}, labels: {}, ...(P.overrides || {}) };
-  P.alwaysMask = P.alwaysMask || []; P.neverMask = P.neverMask || [];
+  P.alwaysMask = P.alwaysMask || []; P.neverMask = P.neverMask || []; P.leakAcks = P.leakAcks || [];
   const ctx = await loadEngine();
   const g = readGlobal();
   const extraGroups = {};
@@ -63,6 +63,10 @@ export async function runProtect(e) {
   const lexicon = ctx.lexMod.buildLexicon(dict);
   const res = ctx.eng.protect(S.transcriptOf(e), { level: P.level, sheet: P.sheet, lexicon, extraFirstNames: ctx.names, communes: ctx.communes, alwaysMask: [...(P.alwaysMask || []), ...(g.always || [])], neverMask: [...(P.neverMask || []), ...(g.never || [])], overrides: P.overrides });
   res.leaks = ctx.eng.leakCheck(res.protectedText, res.spans, P.sheet);
+  // contrôle anti-fuite précis : positions exactes dans le texte d'origine, jamais sur les consignes ni la trame
+  res.leakReport = ctx.eng.leakReport(S.transcriptOf(e), res.spans, P.sheet, { acks: P.leakAcks });
+  const ti = (e.title || '').trim();
+  res.titleLeak = ti.length >= 8 && res.protectedText.toLowerCase().includes(ti.toLowerCase());
   return { res, ctx };
 }
 // Table étiquette -> texte original (reste LOCALE : jamais copiée, jamais envoyée). Sert à la réintégration facultative des noms.
@@ -72,6 +76,73 @@ export function labelTable(res) {
   return m;
 }
 // ---------------------------------------------------------------------
+// Surligne la première occurrence d'un terme dans une zone de texte (retour depuis le contrôle anti-fuite vers l'expression à corriger).
+export function highlightTerm(root, term) {
+  if (!root || !term) return false;
+  const re = new RegExp('(?<![\\p{L}\\p{N}])' + term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\p{L}\\p{N}])', 'iu');
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = walker.nextNode())) {
+    const m = re.exec(n.nodeValue);
+    if (!m) continue;
+    const r = document.createRange(); r.setStart(n, m.index); r.setEnd(n, m.index + m[0].length);
+    const mark = document.createElement('mark'); mark.className = 'flash-mark';
+    try { r.surroundContents(mark); } catch { return false; }
+    mark.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    return true;
+  }
+  return false;
+}
+// Panneau « À traiter » : informations masquées encore présentes (avec expression, emplacement, raison) et éléments à décider,
+// corrigeables directement depuis l'écran qui les signale. Utilisé à l'étape 2 et à l'étape 4.
+export function issuesPanel({ e, res, edit, rerun, onJump }) {
+  const P = e.protect;
+  const box = h('div', { class: 'issues' });
+  const leaks = res.leakReport ? res.leakReport.blocking : [];
+  const todo = res.spans.filter((s) => !s.silent && s.certainty === 'maybe' && s.decision !== 'keep');
+  if (!leaks.length && !todo.length && !res.titleLeak) {
+    box.append(h('div', { class: 'card issue ok' }, icon('check'), h('span', { text: 'Rien à traiter : aucun élément à décider, aucune information masquée n\'est restée visible.' })));
+    return box;
+  }
+  const around = (occ, term) => {
+    const ctx = occ.context; const i = ctx.toLowerCase().indexOf(term.toLowerCase());
+    if (i < 0) return h('span', { text: '… ' + ctx + ' …' });
+    return h('span', {}, '… ' + ctx.slice(0, i), h('mark', { text: ctx.slice(i, i + term.length) }), ctx.slice(i + term.length) + ' …');
+  };
+  if (res.titleLeak) box.append(h('div', { class: 'card issue ko' }, h('div', { class: 'eyebrow', text: 'Information masquée encore présente' }),
+    h('p', { class: 'hint', text: 'Le titre de la fiche apparaît tel quel dans la transcription. Modifiez le titre de la fiche (bouton « Fiche ») ou masquez ce passage.' })));
+  for (const it of leaks) {
+    const first = it.occurrences.find((o) => o.kind === 'oubli') || it.occurrences[0];
+    const n = it.occurrences.filter((o) => o.kind === 'oubli').length;
+    box.append(h('div', { class: 'card issue ko' },
+      h('div', { class: 'eyebrow', text: 'Information masquée encore présente' }),
+      h('div', { class: 'issue-term', text: `« ${it.term} »` }),
+      h('p', { class: 'hint', style: { margin: '4px 0' }, text: `Raison : ${it.why}. ${n > 1 ? n + ' occurrences n\'ont' : 'Cette occurrence n\'a'} pas été masquée${n > 1 ? 's' : ''}.` }),
+      h('p', { class: 'issue-ctx' }, around(first, it.term)),
+      h('p', { class: 'hint', style: { margin: '4px 0 8px' }, text: `Emplacement : paragraphe ${first.paragraph}, caractère ${first.start + 1}.` }),
+      h('div', { class: 'btn-row issue-acts' },
+        h('button', { class: 'btn small primary', onclick: () => { P.alwaysMask.includes(it.term) || P.alwaysMask.push(it.term); edit(); toast(`« ${it.term} » sera masqué partout`); rerun(); } }, icon('shield'), h('span', { text: 'Masquer partout' })),
+        h('button', { class: 'btn small', onclick: () => onJump && onJump(it.term) }, icon('search'), h('span', { text: 'Voir dans le texte' })),
+        h('button', { class: 'btn small', onclick: async () => {
+          if (!(await confirmDialog({ title: 'Cette expression n\'est pas confidentielle ?', confirmLabel: 'Oui, la laisser visible', message: `« ${it.term} » restera visible dans le texte copié, alors qu'elle est masquée ailleurs (${it.why}). Confirmez seulement si ce n'est pas une information identifiante ici.` }))) return;
+          P.leakAcks.includes(it.term) || P.leakAcks.push(it.term); edit(); rerun();
+        } }, icon('check'), h('span', { text: 'Pas confidentiel ici' })))));
+  }
+  for (const sp of todo) {
+    const masked = sp.decision !== 'keep';
+    box.append(h('div', { class: 'card issue warn' },
+      h('div', { class: 'eyebrow', text: 'À décider' }),
+      h('div', { class: 'issue-term', text: `« ${sp.text} »` }),
+      h('p', { class: 'hint', style: { margin: '4px 0 8px' }, text: `${CAT_LABEL[sp.cat] || sp.cat} — ${sp.reason}. Actuellement : ${masked ? 'masqué (« ' + sp.label + ' »)' : 'conservé'}.` }),
+      h('div', { class: 'btn-row issue-acts' },
+        h('button', { class: 'btn small primary', onclick: () => { P.overrides.byText[sp.k] = 'mask'; edit(); rerun(); } }, h('span', { text: 'Masquer' })),
+        h('button', { class: 'btn small', onclick: () => { P.overrides.byText[sp.k] = 'keep'; edit(); rerun(); } }, h('span', { text: 'Conserver tel quel' })),
+        h('button', { class: 'btn small', onclick: () => onJump && onJump(sp.text) }, icon('search'), h('span', { text: 'Voir' })))));
+  }
+  if (todo.length > 1) box.append(h('button', { class: 'btn small', onclick: () => { for (const sp of todo) P.overrides.byText[sp.k] = 'mask'; edit(); rerun(); } }, icon('check'), h('span', { text: `Tout masquer par prudence (${todo.length})` })));
+  return box;
+}
+
 export function protectTab({ e, templates, edit, saver, parcours = false }) {
   if (!e.protect || typeof e.protect !== 'object') e.protect = defaultProtect();
   const P = e.protect;
@@ -206,12 +277,44 @@ export function protectTab({ e, templates, edit, saver, parcours = false }) {
   function review() { return res.spans.filter((s) => !s.silent && s.certainty === 'maybe' && s.decision !== 'keep'); }
   function stat(n, label, cls) { return h('div', { class: 'pstat ' + (cls || '') }, h('b', { text: String(n) }), h('span', { text: label })); }
 
+  // ----- affichage du parcours guidé : éléments à traiter d'abord (téléphone) ou à côté du texte (ordinateur) -----
+  function drawParcours(todo) {
+    const s = res.stats;
+    const wide = window.matchMedia && window.matchMedia('(min-width: 1000px)').matches;
+    const rerunAndFocus = (term) => { viewMode = viewMode === 'original' ? 'protege' : viewMode; draw(); setTimeout(() => { const v = resultBox.querySelector('.pview'); if (!highlightTerm(v, term)) toast('Expression introuvable dans cette vue.'); }, 80); };
+    const issues = issuesPanel({ e, res, edit, rerun: run, onJump: rerunAndFocus });
+    const nIssues = todo.length + (res.leakReport ? res.leakReport.blocking.length : 0) + (res.titleLeak ? 1 : 0);
+    const modes = [['protege', 'Protégé'], ['original', 'Original']];
+    if (wide) modes.push(['cote', 'Côte à côte']);
+    const seg = h('div', { class: 'seg', style: { margin: '0 0 10px' } }, modes.map(([id, l]) => h('button', { class: viewMode === id ? 'on' : '', text: l, onclick: () => { viewMode = id; draw(); } })));
+    const textBlock = viewMode === 'cote'
+      ? h('div', { class: 'pcols' }, h('div', {}, h('div', { class: 'lbl', text: 'Original' }), textView(true)), h('div', {}, h('div', { class: 'lbl', text: 'Protégé' }), textView(false)))
+      : textView(viewMode === 'original');
+    const inp = h('input', { class: 'field', placeholder: 'Mot ou expression à masquer partout', 'aria-label': 'Terme à masquer' });
+    const addTerm = (v) => { v = (v || '').trim(); if (v.length < 2) return toast('Saisissez ou sélectionnez au moins 2 caractères.'); if (!P.alwaysMask.includes(v)) P.alwaysMask.push(v); edit(); inp.value = ''; run(); toast('Terme ajouté : masqué partout dans cette fiche.'); };
+    const forget = h('details', { class: 'evid' }, h('summary', { text: 'Masquer un terme oublié' }),
+      h('div', { style: { display: 'grid', gap: '8px', marginTop: '8px' } }, inp,
+        h('div', { class: 'btn-row' },
+          h('button', { class: 'btn small', onclick: () => addTerm(inp.value) }, icon('plus'), h('span', { text: 'Masquer ce terme' })),
+          h('button', { class: 'btn small', onmousedown: (ev) => ev.preventDefault(), onclick: () => addTerm(String(window.getSelection() || '')) }, icon('edit'), h('span', { text: 'Masquer la sélection' }))),
+        P.alwaysMask.length ? h('p', { class: 'hint', text: `Termes ajoutés pour cette fiche : ${P.alwaysMask.join(', ')}.` }) : null,
+        P.alwaysMask.length ? h('button', { class: 'btn small danger-ghost', onclick: () => { P.alwaysMask = []; edit(); run(); } }, icon('trash'), h('span', { text: 'Vider cette liste' })) : null));
+    resultBox.append(
+      h('div', { class: 'pstats' }, stat(s.masked + s.generalized, 'remplacés'), stat(nIssues, 'à traiter', nIssues ? 'warn' : 'ok'), stat(s.decided, 'décidés'), stat(s.kept, 'conservés')),
+      h('div', { class: 'pgrid' },
+        h('div', { class: 'pside' }, h('div', { class: 'rt serif', style: { fontSize: '19px', color: 'var(--ink)', margin: '4px 0 8px' }, text: nIssues ? `À traiter (${nIssues})` : 'À traiter' }), issues, forget),
+        h('div', { class: 'pmain' }, seg, textBlock,
+          h('p', { class: 'hint', text: 'Touchez un élément coloré pour le conserver, le masquer ou changer son étiquette. Orange : à décider. Bleu : décidé. Pointillé : conservé. La relecture finale et la confirmation se font à l\'étape « ChatGPT ».' }))));
+    if (typeof window.__focusTerm === 'string' && window.__focusTerm) { const t = window.__focusTerm; window.__focusTerm = ''; setTimeout(() => highlightTerm(resultBox.querySelector('.pview'), t), 120); }
+  }
+
   function draw() {
     resultBox.replaceChildren();
     if (!text().trim()) { resultBox.append(h('p', { class: 'hint', text: 'Ajoutez d\'abord la transcription (onglet Transcription).' })); return; }
     if (!res) { resultBox.append(h('p', { class: 'hint', text: 'Analyse en cours…' })); return; }
     if (res.error) { resultBox.append(h('div', { class: 'banner warn' }, icon('info'), h('div', { text: 'Analyse impossible : ' + res.error + '. Votre transcription n\'est pas modifiée.' }))); return; }
     const todo = review();
+    if (parcours) { drawParcours(todo); return; }
     const s = res.stats;
     resultBox.append(h('div', { class: 'pstats' }, stat(s.masked + s.generalized, 'remplacés'), stat(todo.length, 'à vérifier', todo.length ? 'warn' : 'ok'), stat(s.decided, 'décidés'), stat(s.kept, 'conservés')));
 
@@ -317,11 +420,14 @@ export function protectTab({ e, templates, edit, saver, parcours = false }) {
 
   // ----- assemblage -----
   drawLevel(); drawPersons();
-  root.append(notice,
-    h('div', { class: 'card', style: { marginTop: '14px' } }, h('div', { class: 'rt serif', style: { fontSize: '19px', color: 'var(--ink)' }, text: 'Niveau de protection' }), h('div', { style: { marginTop: '10px' } }, seg), levelDesc),
-    sheetCard,
-    h('div', { style: { marginTop: '14px' } }, h('button', { class: 'btn small', onclick: dictSheet }, icon('doc'), h('span', { text: 'Dictionnaire financier' }))),
-    h('div', { style: { height: '16px' } }), resultBox);
+  const levelCard = h('div', { class: 'card', style: { marginTop: '14px' } }, h('div', { class: 'rt serif', style: { fontSize: '19px', color: 'var(--ink)' }, text: 'Niveau de protection' }), h('div', { style: { marginTop: '10px' } }, seg), levelDesc);
+  const dictBtn = h('div', { style: { marginTop: '14px' } }, h('button', { class: 'btn small', onclick: dictSheet }, icon('doc'), h('span', { text: 'Dictionnaire financier' })));
+  if (parcours) {
+    // parcours guidé : ce qui est à traiter et le texte d'abord ; les réglages de la protection viennent ensuite (repliés)
+    root.append(resultBox, h('details', { class: 'evid', style: { marginTop: '18px' } }, h('summary', { text: 'Réglages de la protection (niveau, fiche d\'identité, dictionnaire)' }), notice, levelCard, sheetCard, dictBtn));
+  } else {
+    root.append(notice, levelCard, sheetCard, dictBtn, h('div', { style: { height: '16px' } }), resultBox);
+  }
   // reprise de la fiche d'identité d'un autre entretien du même dossier, si celle-ci est vide
   if (!P.sheet.persons.length && e.folderId) S.listEntretiens().then((all) => {
     const other = all.find((x) => x.id !== e.id && x.folderId === e.folderId && x.protect && x.protect.sheet && x.protect.sheet.persons && x.protect.sheet.persons.length);

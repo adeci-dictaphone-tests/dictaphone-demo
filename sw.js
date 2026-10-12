@@ -1,6 +1,6 @@
 // Service worker : installation de l'application et ouverture rapide. Il ne met en cache QUE les fichiers de l'application
 // (jamais les données de l'utilisateur, qui restent dans IndexedDB). Les modèles d'IA du laboratoire sont gérés par leurs bibliothèques.
-const V = 'dictaphone-demo-0.8.0';
+const V = 'dictaphone-demo-0.8.1';
 const SHELL = [
   './', 'index.html', 'app.css', 'manifest.webmanifest',
   'js/main.js', 'js/ui.js', 'js/store.js', 'js/defaults.js', 'js/common.js', 'js/exports.js', 'js/pdf.js', 'js/backup.js', 'js/version.js', 'js/import.js', 'js/pdfread.js', 'js/update.js', 'js/theme.js', 'js/vocab-ui.js', 'js/trash-ui.js', 'js/diag.js', 'diagnostic.html', 'js/protect-ui.js', 'js/protect/engine.js', 'js/protect/lexicon.js', 'js/protect/patterns.js', 'js/protect/export.js', 'js/protect/dictionnaire-financier.json', 'js/protect/prenoms-insee.txt', 'js/protect/communes-insee.txt', 'js/vault.js', 'js/vault-ui.js', 'js/ttf.js', 'fonts/pdf/AbhayaLibre-Regular.ttf', 'fonts/pdf/OpenSans-Light.ttf', 'fonts/pdf/OpenSans-Regular.ttf', 'vendor/pdfjs/pdf.min.mjs', 'vendor/pdfjs/pdf.worker.min.mjs',

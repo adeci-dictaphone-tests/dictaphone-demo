@@ -53,6 +53,8 @@ export const CUE = {
   ],
   // Indice financier à gauche : le nom est un titre, un produit ou un établissement
   financeLeft: [
+    /(?:pret|prets|credit|credits|emprunt|hypotheque|financement|decouvert)\b[^.;!?]{0,60}\b(?:aupres de|aupres d'|aupres du|chez|a la|au|a l')\s*(?:la\s+|le\s+|l')?$/,
+    /\b(?:contrat|contrats|police|assurance|assurances|mutuelle|prevoyance|couverture)\s*(?:de\s+|d')?$/,
     /(?:action|actions|titre|titres|part|parts|obligation|obligations|etf|tracker|portefeuille|ligne|position|valeur|valeurs|cours|dividende|dividendes|coupon|investi\w*|souscri\w*|detien\w*|detenu\w*|poss[ei]d\w*|acquis\w*|achet\w*|vend\w*|cede\w*|arbitr\w*|exposition|exposee?s?)\b[^.;!?]{0,35}\b(?:de|d'|du|des|sur|dans|en|chez|a|aupres de)?\s*(?:la\s+|le\s+|l'|les\s+)?$/,
     /(?:assurance[- ]?vie|assurance vie|contrat|capitalisation|per|perp|madelin|epargne|compte|livret|pea|pea-pme|cto|compte[- ]titres|placement\w*|enveloppe|support)\b[^.;!?]{0,35}\b(?:chez|aupres de|aupres d'|ouvert\w*\s+(?:chez|a)|souscrit\w*\s+(?:chez|aupres de)|gere\w*\s+(?:chez|par)|de la|de l'|du|de)\s*$/,
     /(?:fonds?|sicav|scpi|opci|opcvm|fcp|fip|fcpi|fcpr|etf|mandat|gestion|gestionnaire|societe de gestion|gere\w*|geree?s?)\b[^.;!?]{0,35}\b(?:de|d'|du|chez|par|gere\w*\s+par|geree?s?\s+par)?\s*$/,

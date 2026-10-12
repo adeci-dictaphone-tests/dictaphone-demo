@@ -40,7 +40,7 @@ export async function newView({ query }) {
   const restored = !!(d.who || d.subject || d.title || d.transcript);
   const valid = (id) => !id || folders.some((f) => f.id === id && f.category === st.category);
   if (!valid(st.folderId)) st.folderId = null;
-  const tplFor = () => templates.filter((t) => t.category === st.category);
+  const tplFor = () => S.visibleTemplates(templates, st.templateId ? [st.templateId] : []).filter((t) => t.category === st.category);
   if (!st.templateId || !templates.some((t) => t.id === st.templateId && t.category === st.category)) { const dt = S.defaultTemplateFor(templates, st.category); st.templateId = dt ? dt.id : null; }
 
   const saveDraft = () => { try { kv.set(DRAFT, JSON.stringify(st)); } catch {} };
@@ -487,7 +487,7 @@ export async function ficheView({ params, query }) {
     const tplSel = h('select', { class: 'field', 'aria-label': 'Trame' });
     for (const c of CATEGORIES) {
       const grp = h('optgroup', { label: c.label });
-      for (const t of templates.filter((x) => x.category === c.id)) grp.append(h('option', { value: t.id, text: t.name }));
+      for (const t of S.visibleTemplates(templates, e.templateId ? [e.templateId] : []).filter((x) => x.category === c.id)) grp.append(h('option', { value: t.id, text: t.name + (S.isTemplateHidden(t.id) ? ' (masquée)' : '') }));
       if (grp.children.length) tplSel.append(grp);
     }
     tplSel.value = e.templateId || '';
@@ -693,11 +693,12 @@ export async function ficheView({ params, query }) {
   const stepIds = STEPS.map((x) => x[0]);
   let step = query.tab && (stepIds.includes(query.tab) ? query.tab : (LEGACY[query.tab] || (query.tab === 'infos' ? 'infos' : null)));
   if (!step) { const st = S.stepOf(e); step = st === 'termine' ? 'compte-rendu' : st; }
-  let corrView = 'corrige';
+  const isWide = () => !!(window.matchMedia && window.matchMedia('(min-width: 1000px)').matches);
+  let corrView = isWide() ? 'compare' : 'corrige';           // ordinateur : comparaison en colonnes par défaut
   const body = h('div', {});
   const stepBar = h('div', { class: 'steps', role: 'tablist', 'aria-label': 'Étapes' });
   const stepNav = h('div', { class: 'stepnav' });
-  const doneOf = (id) => ({ importer: S.hasTranscript(e), corriger: !!(e.protect && e.protect.reviewedAt && e.protect.reviewHash), trame: !!e.templateId, chatgpt: !!(e.protect && e.protect.copiedAt), 'compte-rendu': S.hasReport(e) }[id]);
+  const doneOf = (id) => ({ importer: S.hasTranscript(e), corriger: !!(e.protect && e.protect.visited), trame: !!e.templateId, chatgpt: !!(e.protect && e.protect.copiedAt), 'compte-rendu': S.hasReport(e) }[id]);
   const goStep = async (id) => { await saver.flush(); step = id; renderBody(); window.scrollTo(0, 0); };
 
   // --- documents joints (fichier importé conservé avec la fiche) ---
@@ -745,10 +746,24 @@ export async function ficheView({ params, query }) {
   function stepCorriger() {
     const wrap = h('div', {});
     S.ensureOriginal(e);
-    const seg = h('div', { class: 'seg', style: { marginBottom: '12px' } }, [['corrige', 'Corrigé'], ['protege', 'Protégé'], ['original', 'Original']].map(([id, l]) => h('button', { class: corrView === id ? 'on' : '', text: l, onclick: () => { corrView = id; renderBody(); } })));
+    if (!(e.protect && e.protect.visited)) { e.protect = { v: 1, level: 'renforce', ...(e.protect || {}), visited: true }; edit(); }
+    if (corrView === 'compare' && !isWide()) corrView = 'corrige';
+    const segItems = [['corrige', 'Corrigé'], ['protege', 'Protégé'], ['original', 'Original']];
+    if (isWide()) segItems.unshift(['compare', 'Comparer']);
+    const seg = h('div', { class: 'seg', style: { marginBottom: '12px' } }, segItems.map(([id, l]) => h('button', { class: corrView === id ? 'on' : '', text: l, onclick: () => { corrView = id; renderBody(); } })));
     wrap.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: 'Corrigez les erreurs de transcription, puis vérifiez les éléments masqués. L\'original n\'est jamais remplacé par la version corrigée ou protégée.' }), seg);
     if (!S.hasTranscript(e)) { wrap.append(empty('Aucune transcription', 'Revenez à l\'étape 1 pour ajouter le texte.')); return wrap; }
-    if (corrView === 'corrige') {
+    if (corrView === 'compare') {
+      // ordinateur : Original (lecture seule) | Corrigé (modifiable) | Protégé (calculé), côte à côte
+      const ed = transcriptEditor();
+      const prot = h('pre', { class: 'pview doc cmp-text', style: { whiteSpace: 'pre-wrap' }, text: 'Calcul du texte protégé…' });
+      import('./protect-ui.js').then((m) => m.runProtect(e)).then(({ res }) => { prot.textContent = res.protectedText; }).catch((err) => { prot.textContent = 'Analyse impossible : ' + (err.message || err); });
+      wrap.append(h('div', { class: 'cmp3' },
+        h('div', {}, h('div', { class: 'lbl', text: 'Original (lecture seule)' }), h('pre', { class: 'pview doc cmp-text', style: { whiteSpace: 'pre-wrap' }, text: e.original || S.transcriptOf(e) })),
+        h('div', {}, h('div', { class: 'lbl', text: 'Corrigé (modifiable)' }), ed.el),
+        h('div', {}, h('div', { class: 'lbl', text: 'Protégé (calculé)' }), prot)),
+        h('p', { class: 'hint', text: 'Le texte protégé se recalcule à chaque ouverture ; pour décider des éléments signalés, ouvrez la vue « Protégé ».' }));
+    } else if (corrView === 'corrige') {
       const ed = transcriptEditor();
       wrap.append(h('div', { class: 'banner', style: { marginTop: 0 } }, icon('info'), h('div', { text: 'Vous modifiez la version corrigée. Le bouton « Corriger » applique aussi votre vocabulaire (aperçu et prudence sur les noms propres). Les versions précédentes restent consultables.' })), ed.el);
     } else if (corrView === 'protege') {
@@ -771,48 +786,50 @@ export async function ficheView({ params, query }) {
     wrap.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: 'Choisissez le type de compte rendu. La trame fixe les rubriques et les consignes de rédaction envoyées avec le texte protégé.' }));
     const PRIORITY = ['suivi patrimonial', 'premier rendez-vous', 'reunion interne', 'webinaire'];
     const rank = (t) => { const n = t.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''); const i = PRIORITY.findIndex((p) => n.includes(p)); return i < 0 ? 99 : i; };
-    const list = templates.slice().sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, 'fr'));
-    for (const t of list) {
+    const keep = e.templateId ? [e.templateId] : [];
+    const list = S.visibleTemplates(templates, keep).sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, 'fr'));
+    const hiddenOthers = templates.filter((t) => S.isTemplateHidden(t.id) && !keep.includes(t.id)).sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+    const cardOf = (t) => {
       const sel = e.templateId === t.id;
-      wrap.append(h('div', { class: 'card tplcard' + (sel ? ' on' : ''), style: { marginTop: '10px' } },
+      return (h('div', { class: 'card tplcard' + (sel ? ' on' : ''), style: { marginTop: '10px' } },
         h('div', { style: { display: 'flex', gap: '10px', alignItems: 'center' } },
           h('div', { class: 'grow' }, h('div', { style: { fontWeight: '700', color: 'var(--ink)' }, text: t.name }), h('div', { class: 'hint', style: { margin: '2px 0 0' }, text: `${t.sections.length} rubrique${t.sections.length > 1 ? 's' : ''} · ${t.builtin ? 'trame intégrée' : 'ma trame'}` })),
           h('button', { class: 'btn small ' + (sel ? 'primary' : ''), 'aria-pressed': String(sel), text: sel ? '✓ Choisie' : 'Choisir', onclick: () => { e.templateId = t.id; edit(); renderBody(); } })),
         h('details', { class: 'evid' }, h('summary', { text: 'Voir les rubriques' }), h('ol', { class: 'plain' }, t.sections.map((x) => h('li', { text: x.title })))),
         h('a', { class: 'hint', href: '#/trame/' + t.id, style: { display: 'inline-block', marginTop: '6px' }, onclick: async () => { await saver.flush(); }, text: 'Modifier cette trame' })));
-    }
+    };
+    for (const t of list) wrap.append(cardOf(t));
+    if (hiddenOthers.length) wrap.append(h('details', { class: 'evid', style: { marginTop: '16px' } }, h('summary', { text: `Afficher les trames masquées (${hiddenOthers.length})` }), ...hiddenOthers.map(cardOf)));
     wrap.append(h('a', { class: 'btn small', style: { marginTop: '14px' }, href: '#/trames' }, icon('template'), h('span', { text: 'Gérer toutes mes trames' })));
     return wrap;
   }
 
   // --- 4. Ouvrir dans ChatGPT ---
+  // Une seule étape pour relire, traiter les points signalés, confirmer et envoyer : la revue et la confirmation de confidentialité
+  // sont réunies dans UNE confirmation, demandée avant chaque copie. Rien n'est envoyé automatiquement.
   function stepChatgpt() {
     const wrap = h('div', {}, h('p', { class: 'hint', style: { marginTop: 0 }, text: 'Le texte protégé est copié dans le presse-papiers avec la trame et les consignes, puis ChatGPT s\'ouvre. Vous collez et envoyez vous-même : l\'application n\'envoie rien.' }));
     const out = h('div', {}, h('p', { class: 'hint', text: 'Préparation du texte protégé…' }));
     wrap.append(out);
-    (async () => {
-      let r;
-      try { const { runProtect } = await import('./protect-ui.js'); r = await runProtect(e); }
+    const render = async () => {
+      let r, m;
+      try { m = await import('./protect-ui.js'); r = await m.runProtect(e); }
       catch (err) { out.replaceChildren(h('div', { class: 'banner warn' }, icon('info'), h('div', { text: 'Analyse impossible : ' + (err.message || err) + '. Votre transcription n\'est pas modifiée.' }))); return; }
-      const { res, ctx } = r; const { hashText } = await import('./protect-ui.js');
+      const { res, ctx } = r;
       const tpl = templates.find((x) => x.id === e.templateId) || null;
       const todo = res.spans.filter((s) => !s.silent && s.certainty === 'maybe' && s.decision !== 'keep');
+      const leaks = res.leakReport ? res.leakReport.blocking : [];
+      const nIssues = todo.length + leaks.length + (res.titleLeak ? 1 : 0);
       const prompt = tpl ? ctx.exp.buildPrompt({ template: tpl, categoryLabel: e.category ? catLabel(e.category) : '', protectedText: res.protectedText }) : '';
-      const leaks = tpl ? ctx.eng.leakCheck(prompt, res.spans, (e.protect && e.protect.sheet) || {}).filter((l) => l.kind === 'oubli') : [];
-      const titleLeak = !!(tpl && e.title && e.title.length > 4 && prompt.toLowerCase().includes(e.title.toLowerCase()));
-      const reviewed = !!(e.protect && e.protect.reviewedAt && e.protect.reviewHash === hashText(res.protectedText));
-      const checks = [
-        [S.hasTranscript(e), 'Transcription présente', 'importer', 'Ajoutez la transcription (étape 1).'],
-        [!!tpl, tpl ? `Trame choisie : ${tpl.name}` : 'Trame choisie', 'trame', 'Choisissez une trame (étape 3).'],
-        [todo.length === 0, todo.length ? `${todo.length} élément${todo.length > 1 ? 's' : ''} à vérifier` : 'Aucun élément à vérifier', 'corriger', `Il reste ${todo.length} élément(s) à vérifier : décidez-les (étape 2).`],
-        [reviewed, 'Texte protégé relu et validé', 'corriger', 'La revue du texte protégé n\'est pas validée, ou le texte a changé depuis (étape 2).'],
-        [!leaks.length && !titleLeak, leaks.length || titleLeak ? 'Information masquée encore présente dans le texte' : 'Aucune information masquée dans le texte à copier', 'corriger', 'Une information masquée figure encore dans le texte à copier : masquez-la (étape 2).'],
-      ];
-      const blocked = checks.filter((c) => !c[0]);
-      const list = h('ul', { class: 'checklist' }, checks.map((c) => h('li', { class: c[0] ? 'ok' : 'ko' }, icon(c[0] ? 'check' : 'info'), h('span', { text: c[1] }))));
+      const blockers = [];
+      if (!S.hasTranscript(e)) blockers.push({ txt: 'Aucune transcription : ajoutez-la à l\'étape 1.', go: 'importer', label: 'Aller à l\'import' });
+      if (!tpl) blockers.push({ txt: 'Aucune trame choisie.', go: 'trame', label: 'Choisir la trame' });
+      if (nIssues) blockers.push({ txt: `${nIssues} point${nIssues > 1 ? 's' : ''} à traiter ci-dessous avant l'envoi.` });
+      const blocked = blockers.length > 0;
       const copied = e.protect && e.protect.copiedAt;
+      const jump = (term) => { window.__focusTerm = term; corrView = 'protege'; goStep('corriger'); };
       const doExport = (open) => {
-        ctx.exp && sheet({ title: open ? 'Ouvrir dans ChatGPT' : 'Copier le texte', build(b, close) {
+        sheet({ title: open ? 'Ouvrir dans ChatGPT' : 'Copier le texte', build(b, close) {
           b.append(h('div', { class: 'banner warn', style: { marginTop: 0 } }, icon('shield'), h('div', {}, h('b', { text: 'Ce texte est pseudonymisé, pas anonyme.' }), h('div', { text: 'Il peut encore permettre de reconnaître une personne. Vérifiez que les règles de confidentialité d\'Ade-ci autorisent son utilisation avec ChatGPT et que le compte utilisé n\'entraîne pas ses modèles sur vos conversations.' }))),
             h('ul', { class: 'plain', style: { margin: '12px 0' } }, ctx.exp.AVERTISSEMENT_COPIE.map((t) => h('li', { text: t }))),
             h('p', { class: 'hint', text: `Contenu copié : consignes de rédaction, trame « ${tpl.name} » et transcription corrigée et pseudonymisée (${res.protectedText.length.toLocaleString('fr-FR')} caractères). Aucune table de correspondance, aucune information masquée.` }));
@@ -824,28 +841,36 @@ export async function ficheView({ params, query }) {
             close();
             p.then((done) => {
               if (!done) { toast('Copie impossible : le navigateur a refusé l\'accès au presse-papiers.', 6000); return; }
-              e.protect.copiedAt = Date.now(); edit();
+              e.protect.reviewedAt = Date.now(); e.protect.reviewHash = m.hashText(res.protectedText); e.protect.copiedAt = Date.now(); edit();
               toast('Texte copié. Collez-le dans ChatGPT pour générer votre compte rendu.', 8000);
               renderBody();
             });
           } }, icon(open ? 'share' : 'copy'), h('span', { text: open ? 'Copier et ouvrir ChatGPT' : 'Copier le texte' }));
           ok.addEventListener('change', () => { go1.disabled = !ok.checked; });
-          b.append(h('label', { class: 'check' }, ok, h('span', { text: 'Je confirme avoir relu le texte protégé et être autorisé(e) à l\'utiliser avec ChatGPT (règles de confidentialité d\'Ade-ci).' })),
+          b.append(h('label', { class: 'check' }, ok, h('span', { text: 'J\'ai relu le texte protégé et je suis autorisé(e) à l\'utiliser avec ChatGPT (règles de confidentialité d\'Ade-ci).' })),
             h('div', { class: 'sheet-actions' }, go1, h('button', { class: 'btn', text: 'Annuler', onclick: close })));
         } });
       };
-      const mainBtn = h('button', { class: 'btn primary bigpaste', disabled: blocked.length > 0, onclick: () => doExport(true) }, icon('share'), h('span', { text: 'Ouvrir dans ChatGPT' }));
-      const copyBtn = h('button', { class: 'btn', disabled: blocked.length > 0, onclick: () => doExport(false) }, icon('copy'), h('span', { text: 'Copier uniquement' }));
-      out.replaceChildren(h('div', { class: 'card' }, h('div', { class: 'rt serif', style: { fontSize: '19px', color: 'var(--ink)' }, text: 'Vérifications avant l\'envoi' }), list),
-        blocked.length ? h('div', { class: 'banner warn' }, icon('info'), h('div', {}, h('b', { text: 'Bouton bloqué : ' }), blocked.map((c) => h('div', {}, h('span', { text: c[3] + ' ' }), h('a', { href: 'javascript:void(0)', text: 'Y aller', onclick: () => goStep(c[2]) }))))) : null,
+      const mainBtn = h('button', { class: 'btn primary bigpaste', disabled: blocked, 'aria-describedby': 'why-blocked', onclick: () => doExport(true) }, icon('share'), h('span', { text: 'Ouvrir dans ChatGPT' }));
+      const copyBtn = h('button', { class: 'btn', disabled: blocked, onclick: () => doExport(false) }, icon('copy'), h('span', { text: 'Copier uniquement' }));
+      const kids = [
+        h('div', { class: 'card' },
+          h('div', { class: 'kv' }, h('span', { text: 'Trame' }), h('span', {}, tpl ? tpl.name + ' ' : 'à choisir ', h('a', { href: 'javascript:void(0)', text: 'changer', onclick: () => goStep('trame') }))),
+          h('div', { class: 'kv' }, h('span', { text: 'Éléments masqués' }), h('span', { text: String(res.stats.masked + res.stats.generalized) })),
+          h('div', { class: 'kv' }, h('span', { text: 'À traiter' }), h('span', { class: nIssues ? 'warn-t' : '', text: nIssues ? String(nIssues) : 'aucun' }))),
+        nIssues ? h('div', { style: { marginTop: '14px' } }, m.issuesPanel({ e, res, edit, rerun: render, onJump: jump })) : null,
+        blockers.length ? h('div', { class: 'banner warn', id: 'why-blocked', style: { marginTop: '14px' } }, icon('info'), h('div', {}, h('b', { text: 'Envoi bloqué' }),
+          ...blockers.map((c) => h('div', {}, h('span', { text: c.txt + ' ' }), c.go ? h('a', { href: 'javascript:void(0)', text: c.label, onclick: () => goStep(c.go) }) : null)))) : null,
         h('div', { style: { height: '14px' } }), mainBtn, h('div', { style: { height: '8px' } }), copyBtn,
         copied ? h('div', { class: 'banner', style: { marginTop: '14px' } }, icon('check'), h('div', {}, h('div', { text: 'Texte copié le ' + fmtDateTime(e.protect.copiedAt) + '. Collez-le dans ChatGPT pour générer votre compte rendu.' }),
           h('a', { href: CHATGPT_URL, target: '_blank', rel: 'noopener noreferrer', text: 'Si ChatGPT ne s\'est pas ouvert, touchez ici.' }))) : null,
-        tpl ? h('details', { class: 'evid', style: { marginTop: '14px' } }, h('summary', { text: 'Voir le texte qui sera copié' }), h('pre', { class: 'pview doc', style: { whiteSpace: 'pre-wrap' }, text: prompt })) : null);
-    })();
+        tpl ? h('details', { class: 'evid', style: { marginTop: '14px' }, open: !nIssues }, h('summary', { text: 'Relire le texte qui sera copié' }), h('pre', { class: 'pview doc', style: { whiteSpace: 'pre-wrap' }, text: prompt })) : null,
+      ].filter((x) => x !== null && x !== undefined);
+      out.replaceChildren(...kids);
+    };
+    render();
     return wrap;
   }
-
   // --- 5. Compte rendu ---
   const normTitle = (t) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
   // Découpe le texte collé en rubriques d'après les titres de la trame (aucune ligne n'est perdue).
@@ -933,6 +958,8 @@ export async function ficheView({ params, query }) {
     stepBar.replaceChildren(...STEPS.map(([id, label, short], i) => h('button', { class: (step === id ? 'on ' : '') + (doneOf(id) ? 'done' : ''), role: 'tab', 'aria-selected': String(step === id), 'aria-label': `Étape ${i + 1} : ${label}${doneOf(id) ? ' (terminée)' : ''}`, onclick: () => goStep(id) },
       h('b', { text: doneOf(id) && step !== id ? '✓' : String(i + 1) }), h('span', { class: 'lbl-s', text: short }), h('span', { class: 'lbl-l', text: label }))));
     const idx = stepIds.indexOf(step);
+    const rootView = body.closest ? body.closest('.view') : null;
+    if (rootView) rootView.classList.toggle('fiche-wide', (step === 'corriger' && corrView !== 'original' && corrView !== 'corrige') || step === 'chatgpt');
     body.replaceChildren(step === 'infos' ? h('div', {}, h('button', { class: 'btn small', style: { marginBottom: '12px' }, onclick: () => goStep(S.stepOf(e) === 'termine' ? 'compte-rendu' : (stepIds.includes(S.stepOf(e)) ? S.stepOf(e) : 'importer')) }, icon('back'), h('span', { text: 'Retour au parcours' })), infosTab())
       : step === 'importer' ? stepImporter() : step === 'corriger' ? stepCorriger() : step === 'trame' ? stepTrame() : step === 'chatgpt' ? stepChatgpt() : stepCompteRendu());
     stepNav.replaceChildren();
@@ -950,5 +977,7 @@ export async function ficheView({ params, query }) {
         h('button', { class: 'btn small', onclick: shareMenu }, icon('share'), h('span', { text: 'Partager' }))) }),
     titleInp, meta, saveState,
     audioOn() ? audioCard() : null,
-    stepBar, body, stepNav);  return { el, dispose: async () => { await saver.dispose(); cleanups.forEach((f) => f()); } };
+    stepBar, body, stepNav);
+  el.classList.toggle('fiche-wide', (step === 'corriger' && corrView !== 'original' && corrView !== 'corrige') || step === 'chatgpt');
+  return { el, dispose: async () => { await saver.dispose(); cleanups.forEach((f) => f()); } };
 }

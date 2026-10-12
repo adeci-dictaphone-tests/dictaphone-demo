@@ -108,7 +108,7 @@ export function setOriginalFromImport(e, text, { replace = false, reason = 'impo
 // Étape de la fiche dans le parcours (calculée, aucune migration) : importer, corriger, trame, chatgpt, compte-rendu, termine
 export function stepOf(e) {
   if (!hasTranscript(e)) return 'importer';
-  if (!(e.protect && e.protect.reviewedAt && e.protect.reviewHash)) return 'corriger';   // une revue sans empreinte (ancienne version) est à refaire
+  if (!(e.protect && (e.protect.visited || e.protect.copiedAt))) return 'corriger';        // l'étape 2 est « faite » dès qu'elle a été ouverte ; la revue se fait à l'étape 4
   if (!e.templateId) return 'trame';
   if (!hasReport(e)) return (e.protect && e.protect.copiedAt) ? 'compte-rendu' : 'chatgpt';
   return 'termine';
@@ -268,6 +268,15 @@ export function descendantIds(id, folders) {
 }
 
 // ---------- Trames ----------
+// Trames masquées de la liste par défaut : simple préférence d'affichage, réversible. Une trame masquée n'est ni supprimée ni modifiée,
+// et les fiches qui l'utilisent la conservent (elle reste visible dans leur propre écran).
+const HIDDEN_BY_DEFAULT = ['tpl-clients-detail', 'tpl-premier-rdv', 'tpl-suivi-patrimonial'];
+export function hiddenTemplateIds() { const s = getSettings(); return Array.isArray(s.hiddenTemplates) ? s.hiddenTemplates.slice() : HIDDEN_BY_DEFAULT.slice(); }
+export const isTemplateHidden = (id) => hiddenTemplateIds().includes(id);
+export function setTemplateHidden(id, hidden) { const cur = new Set(hiddenTemplateIds()); if (hidden) cur.add(id); else cur.delete(id); setSetting('hiddenTemplates', [...cur]); }
+export const hasExplicitHidden = () => Array.isArray(getSettings().hiddenTemplates);
+// trames affichées dans les listes de choix ; keepIds : trames à garder visibles quoi qu'il arrive (celle de la fiche en cours)
+export const visibleTemplates = (list, keepIds = []) => list.filter((t) => !isTemplateHidden(t.id) || keepIds.includes(t.id));
 export async function ensureDefaults() {
   const have = new Set((await DB.listTemplates()).map((t) => t.id));
   for (const d of DEFAULT_TEMPLATES) if (!have.has(d.id)) await DB.putTemplate(withIds(clone(d)));

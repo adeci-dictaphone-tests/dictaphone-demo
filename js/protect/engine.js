@@ -109,6 +109,7 @@ export function protect(text, options = {}) {
     const s = m.index + m[0].length - m[1].length; const val = text.slice(s, s + m[1].length);
     const digits = (val.match(/\d/g) || []).length;
     if (digits < 5) continue;
+    if (/^(?:\+?33\s?|0)[1-9](?:[\s.\-]?\d{2}){4}$/.test(val.trim())) continue;        // un numéro de téléphone n'est pas un numéro de contrat
     if (/^\d{1,3}(?:\s\d{3})+\s*$/.test(val.trim())) continue;                         // « 240 000 » est un montant, pas un numéro
     if (/^(?:(?:19|20)\d{2}[\s\/.\-]*)+$/.test(val.trim())) continue;                  // années
     if (!/^[a-z]/.test(f.slice(s, s + 1)) && digits < 6) continue;                      // sans préfixe de lettres : au moins 6 chiffres
@@ -279,6 +280,16 @@ export function protect(text, options = {}) {
     if (!first.has(w) && !(w.includes('-') && w.split('-').every((p) => first.has(p)))) continue;     // « Marie-Claire »
     add({ start: m.index, end: m.index + m[0].length, cat: 'PERSONNE', certainty: 'maybe', reason: 'prénom isolé (liste de prénoms courants)', rank: RANK.firstname });
   }
+  // « vous détenez aussi Bati Concept, non cotée » : verbe de détention ou de direction suivi directement d'un nom propre inconnu = société du client (à vérifier)
+  for (const m of fmatches("\\b(?:deten\\w+|detien\\w+|possed\\w+|dirig\\w+|fond\\w+|creez|cree\\w*|rachet\\w+|achet\\w+\\s+(?:la\\s+societe|l'entreprise))\\s+(?:aussi\\s+|egalement\\s+|encore\\s+|maintenant\\s+)?(?:la\\s+|le\\s+|l')?")) {
+    const seq = capSeqAt(text, m.index + m[0].length, 3);
+    if (!seq || seq.text.length < 4 || !okSeq(seq)) continue;
+    const fs = fold(seq.text);
+    if (lex.aliasMap.has(fs) || first.has(fs) || PRONOUN_STOP.has(fs) || COMMON_WORDS.has(fs)) continue;
+    { let known = false; for (const k of lex.aliasMap.keys()) if (fs === k || fs.startsWith(k + ' ')) { known = true; break; } if (known) continue; }   // « Amundi Actions Monde » : fonds connu, pas une société du client
+    if (!/^\s*(?:,|\.|\s+(?:non\s+cotee|sas|sarl|eurl|sci|a\s+\d|dont|qui|avec|et\b))/.test(f.slice(seq.end, seq.end + 20)) && !/\p{Lu}/u.test(seq.text.slice(1))) continue;
+    add({ start: seq.start, end: seq.end, cat: 'SOCIETE', certainty: 'maybe', reason: 'société détenue ou dirigée par le client (verbe de détention) : à vérifier', rank: RANK.orgform - 5, key: fs });
+  }
   // « Rose, ma sœur, … », « Delcourt est mon associé » : un nom suivi d'un lien de parenté ou de fonction est une personne,
   // même si c'est aussi un mot courant (Rose, Blanc, Lebon)
   for (const m of fmatches(`(?:\\s*,\\s*|\\s+est\\s+)(?:mon|ma|mes|son|sa|ses|notre|nos|votre|vos|leur|leurs)\\s+${KINSHIP_F}\\b`)) {
@@ -312,14 +323,18 @@ export function protect(text, options = {}) {
     if (!entry) continue;
     const cx = ctxOf(s, en);
     // « mon conseiller chez LCL » : l'établissement de l'interlocuteur financier, pas l'employeur du client
-    const advisor = /(?:conseill\w+|banquier|charge\w*\s+de\s+clientele|gestionnaire|courtier|interlocuteu\w+|agent)\s+(?:chez|a|de\s+la|de\s+l'|du)\s*(?:la\s+|le\s+|l')?$/.test(cx.left);
+    // seulement si c'est LE conseiller du client (possessif) : « mon conseiller chez LCL » ; « il est conseiller chez LCL » est son métier (employeur)
+    const advisor = /(?:\b(?:mon|ma|mes|notre|nos|votre|vos|son|sa|ses|leur|leurs)\s+(?:nouveau\s+|ancien\s+|ex-)?)(?:conseill\w+|banquier|charge\w*\s+de\s+clientele|gestionnaire|courtier|interlocuteu\w+|agent)\s+(?:chez|a|de\s+la|de\s+l'|du)\s*(?:la\s+|le\s+|l')?$/.test(cx.left);
+    // « est juriste chez Amundi », « êtes responsable à la BNP » : un métier suivi de « chez » = employeur (et non un produit placé chez)
+    const jm = /\b(?:est|etes|suis|sont|etait|etais|devient|reste)\s+((?:(?:un|une|le|la|l')\s*)?(?:[a-z\-]+\s+){0,4}?)(?:chez|a la|a l'|au|aux|pour)\s*(?:la\s+|le\s+|l')?$/.exec(cx.left);
+    const jobChez = !!jm && jm[1].trim().length > 2 && !/\b(?:ouvert\w*|place\w*|souscrit\w*|domicili\w*|detenu\w*|gere\w*|investi\w*|loge\w*|heberge\w*|depose\w*|verse\w*|compte|contrat|assurance|placement|epargne|pea|livret|per|fonds|actions?)\b/.test(jm[1]);
     // « son mari est chez Michelin », « il est chez Vinci » : sujet = une personne (jamais « mon compte est chez Boursorama »)
     const estChez = /\b(?:est|etait|sera|reste|bosse|travaille)\s+chez\s+$/.test(cx.left) && (
       /\b(?:il|elle|mari|femme|epou[sx]e?|fils|fille|frere|soeur|pere|mere|conjoint(?:e)?|compagn(?:on|e)|collegue|associe(?:e)?|voisin(?:e)?|ami(?:e)?|moi|je)\s+(?:est|etait|sera|reste|bosse|travaille)\s+chez\s+$/.test(cx.left)
       || /\p{Lu}[\p{L}'’\-]+\s+(?:est|etait|sera|reste|bosse|travaille)\s+chez\s+$/u.test(text.slice(Math.max(0, s - cx.left.length), s))
       || (() => { const w = /([a-z'’\-]{3,})\s+(?:est|etait|sera|reste|bosse|travaille)\s+chez\s+$/.exec(cx.left); return !!w && first.has(w[1]); })())
       && (entry.employerFrequent || !FIN_ROLES.has(entry.role));        // un établissement purement financier n'est pas un employeur : « il est chez Natixis » = le plan
-    const emp = !advisor && (estChez || endsWithAny(CUE.employerLeft, cx.left) || endsWithAny(CUE.employerRight, cx.right));
+    const emp = !advisor && (estChez || jobChez || endsWithAny(CUE.employerLeft, cx.left) || endsWithAny(CUE.employerRight, cx.right));
     const fin = advisor || endsWithAny(CUE.financeLeft, cx.left) || endsWithAny(CUE.financeRight, cx.right);
     const own = endsWithAny(CUE.ownCompanyLeft, cx.left);
     const key = fold(entry.name);
@@ -507,6 +522,25 @@ export function protect(text, options = {}) {
       if (renf) { c.cat = 'EMPLOYEUR'; c.decision = 'mask'; c.certainty = 'maybe'; c.reason = "titre ou produit du même nom qu'un employeur cité : peut révéler l'employeur (niveau Renforcé)"; }
       else { c.certainty = 'info'; c.reason = "titre ou produit du même nom qu'un employeur cité (conservé en niveau Standard)"; }
     } }
+  // Un titre ou un fonds conservé dont le NOM CONTIENT celui d'un employeur ou d'une société masqués (« Amundi Actions Monde » alors que le
+  // client ou son conjoint travaille chez Amundi) : le fonds est utile au compte rendu, mais il peut révéler l'employeur. Décision explicite.
+  { const names = [];                                           // { n: nom replié, s, e : position de l'élément d'où il vient (-1 : fiche d'identité) }
+    for (const v of [...(sheet.employers || []), ...(sheet.companies || [])]) if (v && v.trim().length >= 4) names.push({ n: fold(v).trim(), s: -1, e: -1 });
+    for (const c of cands) if ((c.cat === 'EMPLOYEUR' || c.cat === 'SOCIETE') && c.decision === 'mask' && (c.certainty === 'sure' || c.certainty === 'maybe')) {
+      const t = fold(text.slice(c.start, c.end)).trim(); if (t.length >= 4) names.push({ n: t, s: c.start, e: c.end });
+    }
+    for (const c of cands) {
+      if (c.decision !== 'keep' || (c.cat !== 'ETABLISSEMENT' && c.cat !== 'PRODUIT')) continue;
+      const ft = fold(text.slice(c.start, c.end)).trim();
+      for (const { n, s: ns, e: ne } of names) {
+        if (ns >= 0 && ns < c.end && ne > c.start) continue;           // un candidat concurrent du même passage n'est pas un nom « ailleurs »
+        if (ft === n || ft.length <= n.length) continue;
+        if (!new RegExp('(?<![a-z0-9])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+') + '(?![a-z0-9])').test(ft)) continue;
+        if (renf) { c.cat = 'EMPLOYEUR'; c.decision = 'mask'; c.certainty = 'maybe'; c.silent = false; c.reason = `nom de fonds ou de titre contenant « ${n} », nom masqué ailleurs (employeur ou société) : peut révéler l'employeur (niveau Renforcé)`; c.key = c.key || ft; }
+        else { c.certainty = 'info'; c.silent = false; c.reason = `nom de fonds ou de titre contenant « ${n} », nom masqué ailleurs (conservé en niveau Standard)`; }
+        break;
+      }
+    } }
   // Un nom de famille déjà reconnu avec certitude est reconnu partout ailleurs dans le texte (« Delcourt » seul, plus loin).
   { const known = new Map();                                     // nom de personne -> « confirmé par un indice » (peut être un mot courant)
     const TITLE = /^(?:m\.|mme|mlle|monsieur|madame|mademoiselle|ma[iî]tre|me|docteur|dr|professeur|pr)\s+/iu;
@@ -640,7 +674,44 @@ export function protect(text, options = {}) {
   return { protectedText: out, spans, stats, level: o.level };
 }
 
-// Contrôle de fuite : renvoie les textes originaux masqués (et les noms de la fiche) qui figurent encore dans le texte à copier.
+// Contrôle de fuite PRÉCIS, appliqué au texte d'origine et aux éléments détectés (jamais aux consignes ni à la trame) :
+// pour chaque nom masqué ou nom de la fiche (personne, employeur, société, adresse), repère les occurrences qui ne sont PAS masquées.
+//  - occurrence sans aucun élément détecté        -> « oubli » : bloque la copie tant que non corrigée (masquer partout) ou reconnue non confidentielle par l'utilisateur ;
+//  - occurrence dans un élément conservé          -> « conserve » : décision visible (jamais bloquante ici ; en Renforcé, l'élément est déjà « à décider »).
+// acks : termes que l'utilisateur a reconnus non confidentiels pour cette fiche (décision explicite et enregistrée).
+export function leakReport(text, spans, sheet = {}, { acks = [] } = {}) {
+  const f = fold(text);
+  const ackSet = new Set((acks || []).map((a) => fold(String(a)).trim()));
+  const terms = new Map();
+  const addTerm = (t, why, cat) => { const k = fold(String(t || '')).trim(); if (k.length < 4 || terms.has(k) || ackSet.has(k)) return; terms.set(k, { text: String(t).trim(), why, cat }); };
+  const CIV = /^(?:M\.|Mme|Mlle|Monsieur|Madame|Mademoiselle|Maître|Maitre|Me|Docteur|Dr|Professeur|Pr)\s+/i;
+  const catLabel = { PERSONNE: 'une personne', EMPLOYEUR: 'un employeur', SOCIETE: 'une société', VILLE: 'un lieu', ADRESSE: 'une adresse', ETABLISSEMENT_LIEU: 'un établissement' };
+  for (const s of spans) if (s.decision === 'mask' || s.decision === 'generalize') addTerm(s.text.replace(CIV, ''), `masqué ailleurs dans le texte comme ${catLabel[s.cat] || 'une information confidentielle'}`, s.cat);
+  for (const p of sheet.persons || []) { addTerm(p.name, 'nom d\'une personne de la fiche d\'identité', 'PERSONNE'); for (const t of String(p.name || '').split(/\s+/)) addTerm(t, 'nom ou prénom d\'une personne de la fiche d\'identité', 'PERSONNE'); }
+  for (const v of sheet.employers || []) addTerm(v, 'employeur indiqué dans la fiche d\'identité', 'EMPLOYEUR');
+  for (const v of sheet.companies || []) addTerm(v, 'société indiquée dans la fiche d\'identité', 'SOCIETE');
+  for (const v of sheet.addresses || []) addTerm(v, 'adresse indiquée dans la fiche d\'identité', 'ADRESSE');
+  const items = [];
+  for (const [k, t] of terms) {
+    const wantUpper = /\p{Lu}/u.test(t.text[0] || '');
+    const rx = new RegExp('(?<![\\p{L}\\p{N}])' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+') + '(?![\\p{L}\\p{N}])', 'gu');
+    const occ = [];
+    for (const m of f.matchAll(rx)) {
+      const s0 = m.index, e0 = s0 + m[0].length;
+      if (/\p{Lu}/u.test(text[s0] || '') !== wantUpper) continue;                       // « petit » (adjectif) n'est pas « Petit » (nom)
+      const cover = spans.find((s) => s.start <= s0 && s.end >= e0);
+      if (cover && (cover.decision === 'mask' || cover.decision === 'generalize')) continue;
+      const para = text.slice(0, s0).split(/\n\s*\n/).length;
+      occ.push({ start: s0, end: e0, kind: cover ? 'conserve' : 'oubli', paragraph: para, inside: cover ? cover.text : null, insideReason: cover ? cover.reason : null,
+        context: text.slice(Math.max(0, s0 - 60), Math.min(text.length, e0 + 60)).replace(/\s+/g, ' ') });
+    }
+    if (occ.length) items.push({ term: t.text, key: k, cat: t.cat, why: t.why, kind: occ.some((o) => o.kind === 'oubli') ? 'oubli' : 'conserve', occurrences: occ });
+  }
+  items.sort((a, b) => a.occurrences[0].start - b.occurrences[0].start);
+  return { items, blocking: items.filter((i) => i.kind === 'oubli') };
+}
+
+// Contrôle de fuite (ancienne version, sur texte déjà protégé) : renvoie les textes originaux masqués (et les noms de la fiche) qui figurent encore dans le texte à copier.
 // kind « conserve » : le même texte est volontairement conservé ailleurs (ex. employeur Airbus masqué, actions Airbus conservées) ; kind « oubli » : à corriger.
 export function leakCheck(protectedText, spans, sheet = {}) {
   const low = fold(protectedText); const leaks = new Map();
