@@ -448,3 +448,13 @@ html.kbd .update-banner { display: none; }
 /* cibles tactiles confortables (iPhone) */
 .sec-head a, .sec-head button, .note a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 6px; }
 .crumbs button { min-height: 40px; }
+
+/* ----- Coffre : bouton « Verrouiller » et nom d'espace ----- */
+.lock-slot { display: none; }
+.lock-home { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+.lock-home .hint { margin: 0; }
+@media (min-width: 1000px) {
+  .lock-slot:not([hidden]) { display: grid; gap: 8px; position: absolute; left: 20px; right: 20px; bottom: 22px; }
+  .lock-space { font-size: 12.5px; color: var(--muted); text-align: center; overflow-wrap: anywhere; }
+  .lock-home { display: none; }
+}

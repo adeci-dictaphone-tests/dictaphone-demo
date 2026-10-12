@@ -12,12 +12,28 @@ export const catInfo = (id) => CATEGORIES.find((c) => c.id === id) || null;
 export const catLabel = (id) => (CATEGORIES.find((c) => c.id === id) || {}).label || 'Non classé';
 export const catShort = (id) => (CATEGORIES.find((c) => c.id === id) || {}).short || 'Non classé';
 
-const sec = (title, instruction) => ({ title, instruction });
+const sec = (title, instruction, level) => ({ title, instruction, ...(level === 2 ? { level: 2 } : {}) });
 
 // Consignes : elles guident la rédaction manuelle aujourd'hui, et serviront de consignes à une IA interne plus tard.
 export const DEFAULT_TEMPLATES = [
   {
-    id: 'tpl-clients', category: 'clients', name: 'Entretien client', builtin: true, isDefault: true,
+    // Trame de suivi patrimonial en six rubriques (sous-rubriques en retrait). Pas de « Non évoqué » : une rubrique sans information reste vide.
+    id: 'tpl-clients-v2', category: 'clients', name: 'Entretien client', builtin: true, isDefault: true,
+    sections: [
+      sec('Patrimoine', 'Vue d\'ensemble du patrimoine, par grandes familles. Le détail va dans les sous-rubriques ci-dessous.'),
+      sec('Financier', 'Placements financiers : enveloppes (PEA, assurance-vie, CTO, PER…), montants, valorisations, établissements, supports.', 2),
+      sec('Immobilier', 'Biens immobiliers : nature, valeur, crédit en cours (capital restant dû, taux, mensualité, échéance), loyers, SCPI.', 2),
+      sec('Professionnel / épargne salariale et retraite', 'Entreprise ou activité, détention de titres, épargne salariale (PEE, PERCOL), retraite (PER, régimes).', 2),
+      sec('Situation', 'Situation familiale et professionnelle, revenus et fiscalité, contraintes et évolutions importantes.'),
+      sec('Besoins', 'Objectifs exprimés, projets, contraintes et priorités.'),
+      sec('Intérêts', 'Solutions envisagées, produits ou stratégies étudiés, pistes d\'arbitrage. Ce sont des pistes, pas des décisions.'),
+      sec('Actions', 'Actions concrètes, documents à demander ou transmettre, responsabilités et échéances.'),
+      sec('À garder en mémoire', 'Échéances futures, points en attente, sujets à reprendre.'),
+    ],
+  },
+  {
+    // Ancienne trame à neuf rubriques : conservée telle quelle (renommée, masquée par défaut, récupérable).
+    id: 'tpl-clients', category: 'clients', name: 'Entretien client (ancienne trame, 9 rubriques)', builtin: true, isDefault: false,
     sections: [
       sec('Contexte du rendez-vous', 'Date, participants, motif et cadre de l\'échange.'),
       sec('Situation patrimoniale', 'Éléments de situation évoqués (famille, activité, actifs, passif). Ne retenir que ce qui a été dit.'),

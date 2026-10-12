@@ -9,30 +9,56 @@ export const AVERTISSEMENT_COPIE = [
   'Rien n\'est envoyé par l\'application : le texte est seulement copié dans le presse-papiers. Sur iPhone et Mac, le presse-papiers peut être partagé avec vos autres appareils.',
 ];
 
-export function instructionsBlock() {
+export function instructionsBlock({ dateLabel = '' } = {}) {
   return [
-    'Tu es l\'assistant rédactionnel d\'un cabinet de gestion de patrimoine (Family Office). Ci-dessous : la transcription d\'un entretien, déjà pseudonymisée, et la trame du compte rendu à produire.',
+    'Tu es l\'assistant d\'un conseiller en gestion de patrimoine (Family Office). Ci-dessous : la transcription brute d\'un entretien, déjà pseudonymisée, et la trame de la fiche de suivi patrimonial à produire. Ton rôle : extraire les informations utiles et les ranger dans les rubriques patrimoniales de la trame, de façon synthétique, factuelle et professionnelle.',
     '',
-    'RÈGLES',
-    '- N\'utilise que les informations de la transcription. N\'invente aucun montant, date, taux, nom, produit, décision ni conseil. Si une information manque, écris « Non évoqué ».',
-    '- Conserve exactement les montants, dates, taux, établissements et produits cités.',
-    '- Conserve les expressions d\'incertitude (environ, à confirmer, envisagé, prévu, en attente).',
-    '- Distingue : les faits, les hypothèses ou pistes évoquées (non décidées), les décisions validées, les actions à réaliser (avec le responsable et l\'échéance seulement s\'ils sont dits explicitement) et les points de suivi.',
-    '- Ne transforme pas une piste en recommandation validée. Ne classe pas une simple information descriptive dans les actions.',
-    '- Sois synthétique : listes structurées, pas de répétitions, pas de récit chronologique, pas de phrases de remplissage ni de détails sans intérêt patrimonial.',
-    '- Les étiquettes comme « Client A », « Cliente A », « Personne B », « Entreprise A » ou « Ville A » remplacent des informations masquées : reprends-les telles quelles et ne cherche pas à deviner ce qu\'elles désignent.',
-    '- Écris en français. Utilise exactement les titres de rubriques de la trame, dans cet ordre.',
+    'FORME',
+    '- Écris en français, en puces courtes (« - »), une idée par puce, style de notes professionnelles de conseiller : phrases nominales, abréviations courantes acceptées (AV, PEA, PER, PEE, PERCOL, SCPI, CTO, TMI).',
+    '- Pas de tableau, pas de gras, pas de longs paragraphes : uniquement des titres et des listes à puces, faciles à recopier.',
+    `- Écris chaque titre de rubrique seul sur sa ligne, exactement comme dans la trame, suivi de deux-points (« Patrimoine : », « Financier : »…), sans numéro ni symbole Markdown. Place les sous-rubriques sous leur rubrique, dans l'ordre de la trame.${dateLabel ? ` Commence la fiche par la ligne « Maj du ${dateLabel} ».` : ''}`,
+    '- Adapte-toi au contenu réel : n\'écris que les rubriques et sous-rubriques pour lesquelles la transcription apporte une information. N\'écris pas de longues listes « Non évoqué » ; une rubrique sans information peut être omise ou laissée vide.',
+    '- Sois synthétique : pas de répétitions, pas de récit chronologique de l\'entretien, pas de formules de politesse, pas de détails sans intérêt patrimonial.',
+    '',
+    'FIDÉLITÉ',
+    '- N\'utilise que ce qui figure dans la transcription. N\'invente aucun montant, date, taux, valorisation, nom, produit, décision, conseil ni recommandation.',
+    '- Conserve exactement les montants, dates, taux, valorisations, échéances et noms de produits ou de sociétés financières cités (PEA, assurance-vie, fonds, SCPI, etc.).',
+    '- Conserve les nuances d\'incertitude (environ, à confirmer, envisagé, prévu, en attente). Signale brièvement par « à confirmer » les seuls points importants qui paraissent incertains, contradictoires ou incomplets.',
+    '- Distingue clairement : les besoins exprimés, les intérêts ou pistes évoquées (non décidées), les décisions prises et les actions à réaliser (avec responsable et échéance seulement s\'ils sont dits). Ne transforme jamais une piste ou une idée en décision, ni une information descriptive en action.',
+    '',
+    'TRANSCRIPTION SANS IDENTIFICATION DES INTERVENANTS',
+    '- La transcription est brute (dictée automatique) : ponctuation imparfaite, erreurs de dictée, phrases incomplètes, interlocuteurs non identifiés. N\'invente pas qui parle.',
+    '- Quand l\'attribution est incertaine, utilise une formulation neutre (« Il est indiqué que… », « Un placement de… », « Le foyer détient… ») plutôt que d\'attribuer arbitrairement un placement, un revenu ou une décision à une personne.',
+    '- Garde les faits certains même si leur auteur est incertain. Si l\'incertitude est importante, ajoute « à confirmer ».',
+    '',
+    'PSEUDONYMES',
+    '- Les étiquettes comme « Client A », « Personne B », « Entreprise A » ou « Ville A » remplacent des informations masquées. Ne cherche jamais à deviner ni à reconstituer les identités réelles.',
+    '- Ne répète pas ces étiquettes mécaniquement : préfère « le foyer », « le couple », « le client », « l\'un des conjoints », « le PEA », « le contrat d\'assurance-vie », « le portefeuille ». N\'utilise une étiquette que lorsqu\'il faut distinguer les titulaires ou les personnes concernées.',
+    '- Ne supprime pas une information patrimoniale au motif qu\'elle est liée à une personne ou à une société pseudonymisée : garde-la, avec l\'étiquette si nécessaire.',
   ].join('\n');
 }
 
+// Trame hiérarchique : 1. Rubrique / 1.1 Sous-rubrique (section.level === 2).
 export function trameBlock(template) {
-  const lines = (template.sections || []).map((s, i) => `${i + 1}. ${s.title}${s.instruction ? ' — ' + s.instruction : ''}`);
-  return ['TRAME DU COMPTE RENDU : ' + template.name, ...lines].join('\n');
+  let n = 0, sub = 0;
+  const lines = (template.sections || []).map((s) => {
+    let num;
+    if (s.level === 2 && n > 0) num = `   ${n}.${++sub}`; else { n++; sub = 0; num = `${n}.`; }
+    return `${num} ${s.title}${s.instruction ? ' — ' + s.instruction : ''}`;
+  });
+  return ['TRAME DE LA FICHE : ' + template.name, ...lines].join('\n');
 }
 
-export function buildPrompt({ template, categoryLabel = '', protectedText }) {
+// Date au format AAMMJJ (ex. 7 octobre 2026 → 261007), pour la ligne « Maj du … ».
+export function dateAAMMJJ(ms) {
+  if (!Number.isFinite(ms)) return '';
+  const d = new Date(ms);
+  return String(d.getFullYear() % 100).padStart(2, '0') + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
+}
+
+export function buildPrompt({ template, categoryLabel = '', protectedText, dateMs = null }) {
   return [
-    instructionsBlock(), '',
+    instructionsBlock({ dateLabel: dateMs ? dateAAMMJJ(dateMs) : '' }), '',
     trameBlock(template), '',
     'TYPE D\'ENTRETIEN : ' + (categoryLabel || 'non précisé'), '',
     'TRANSCRIPTION PSEUDONYMISÉE',

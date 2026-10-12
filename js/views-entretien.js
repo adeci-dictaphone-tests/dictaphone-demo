@@ -7,6 +7,7 @@ import { go, topbar, pickFolder } from './common.js';
 import { fmtDate, fmtDateTime, reportText, transcriptText, copyText, downloadText, downloadBlob, shareOrDownload, printReport, safeName, metaLine, docPdfFile, validEmail, splitAddresses, mailtoHref, openMailto } from './exports.js';
 import { buildWavBlob, attachWav, audioDigest } from '../audio.js';
 import * as DB from '../db.js';
+import { parseReport, buildSections } from "./report-import.js";
 import { cleanText, pickFile, readImport, previewImport, words as wordsOf } from './import.js';
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -471,7 +472,7 @@ export async function ficheView({ params, query }) {
     const out = tpl.sections.map((ts) => {
       const m = existing.find((x) => !used.has(x.id) && x.title.trim().toLowerCase() === ts.title.trim().toLowerCase());
       if (m) { used.add(m.id); return m; }
-      return { id: S.uid('r'), title: ts.title, content: '' };
+      return { id: S.uid('r'), title: ts.title, content: '', ...(ts.level === 2 ? { level: 2 } : {}) };
     });
     for (const x of existing) if (!used.has(x.id) && (x.content || '').trim()) out.push(x); // rien de rédigé n'est perdu
     return out;
@@ -586,8 +587,8 @@ export async function ficheView({ params, query }) {
         ta.addEventListener('input', () => { s.content = ta.value; if (s.ia && pill) { s.edited = true; pill.textContent = 'IA · modifié'; } edit(); });
         const hint = tp && (tp.sections.find((x) => x.title.trim().toLowerCase() === s.title.trim().toLowerCase()) || {}).instruction;
         if (s.ia && s.edited && pill) pill.textContent = 'IA · modifié';
-        box.append(h('div', { class: 'rsec' },
-          h('div', { class: 'rsec-head' }, h('div', { class: 'rt', text: s.title }), pill,
+        box.append(h('div', { class: 'rsec' + (s.level === 2 ? ' sub' : ''), style: s.level === 2 ? { marginLeft: '14px', borderLeft: '3px solid var(--line, #d8dde2)', paddingLeft: '10px' } : {} },
+          h('div', { class: 'rsec-head' }, h('div', { class: 'rt', style: s.level === 2 ? { fontSize: '0.95em' } : {}, text: s.title }), pill,
             h('button', { class: 'iconbtn', 'aria-label': 'Supprimer la rubrique', style: { color: 'var(--muted)', width: '36px', height: '36px' }, onclick: async () => {
               if ((s.content || '').trim() && !(await confirmDialog({ title: 'Supprimer cette rubrique ?', message: 'Le texte qu\'elle contient sera perdu.', danger: true, confirmLabel: 'Supprimer' }))) return;
               e.reportSections = list.filter((x) => x !== s); edit(); renderBody();
@@ -820,7 +821,7 @@ export async function ficheView({ params, query }) {
       const todo = res.spans.filter((s) => !s.silent && s.certainty === 'maybe' && s.decision !== 'keep');
       const leaks = res.leakReport ? res.leakReport.blocking : [];
       const nIssues = todo.length + leaks.length + (res.titleLeak ? 1 : 0);
-      const prompt = tpl ? ctx.exp.buildPrompt({ template: tpl, categoryLabel: e.category ? catLabel(e.category) : '', protectedText: res.protectedText }) : '';
+      const prompt = tpl ? ctx.exp.buildPrompt({ template: tpl, categoryLabel: e.category ? catLabel(e.category) : '', protectedText: res.protectedText, dateMs: e.date }) : '';
       const blockers = [];
       if (!S.hasTranscript(e)) blockers.push({ txt: 'Aucune transcription : ajoutez-la à l\'étape 1.', go: 'importer', label: 'Aller à l\'import' });
       if (!tpl) blockers.push({ txt: 'Aucune trame choisie.', go: 'trame', label: 'Choisir la trame' });
@@ -872,56 +873,54 @@ export async function ficheView({ params, query }) {
     return wrap;
   }
   // --- 5. Compte rendu ---
-  const normTitle = (t) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
-  // Découpe le texte collé en rubriques d'après les titres de la trame (aucune ligne n'est perdue).
-  function splitReport(text, tpl) {
-    const keys = (tpl ? tpl.sections : []).map((s) => normTitle(s.title));
-    const lines = text.replace(/\r\n?/g, '\n').split('\n');
-    const out = []; let cur = { title: null, lines: [] }; const pre = [];
-    const used = new Set();
-    for (const ln of lines) {
-      const bare = ln.replace(/^\s*(?:#{1,6}|\d+[.)]|[-*•])\s*/, '').replace(/[*_`]/g, '').trim();
-      const head = normTitle(bare.split(/[:：]/)[0]);
-      const idx = bare.length <= 140 ? keys.findIndex((k, i) => k && !used.has(i) && head === k) : -1;
-      if (idx >= 0) {
-        used.add(idx); if (cur.title !== null || cur.lines.length) out.push(cur);
-        const rest = /[:：]/.test(bare) ? bare.slice(bare.search(/[:：]/) + 1).trim() : '';
-        cur = { title: tpl.sections[idx].title, lines: rest ? [rest] : [] };
-      } else cur.lines.push(ln);
-    }
-    out.push(cur);
-    const sections = [], preamble = [];
-    for (const c of out) { const content = c.lines.join('\n').replace(/^\s+|\s+$/g, ''); if (c.title === null) { if (content) preamble.push(content); } else sections.push({ title: c.title, content }); }
-    return { sections, preamble: preamble.join('\n\n'), found: sections.length };
-  }
+  // Import du compte rendu de ChatGPT : reconnaissance des rubriques de la trame (voir report-import.js), aperçu modifiable.
+  // Le texte reçu est toujours conservé tel quel (e.reportRaw) en plus des rubriques.
   function pasteReportBlock(refresh) {
     const ta = h('textarea', { class: 'textarea', rows: '6', placeholder: 'Collez ici le compte rendu généré par ChatGPT…', 'aria-label': 'Compte rendu collé', spellcheck: 'false' });
     const pasteBtn = h('button', { class: 'btn small', onclick: async () => { try { const t = await navigator.clipboard.readText(); if (!t.trim()) return toast('Le presse-papiers est vide.'); ta.value = t; } catch { toast('Appuyez longuement dans la zone, puis « Coller ».', 4200); ta.focus(); } } }, icon('clipboard'), h('span', { text: 'Coller le presse-papiers' }));
     const importBtn = h('button', { class: 'btn primary', onclick: () => {
       const text = ta.value.trim(); if (!text) return toast('Collez d\'abord le compte rendu.');
       const tpl = templates.find((x) => x.id === e.templateId) || null;
-      const sp = splitReport(text, tpl);
-      sheet({ title: 'Importer le compte rendu', build(b, close) {
-        const items = sp.found ? sp.sections : [{ title: 'Compte rendu', content: text }];
-        b.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: sp.found ? `${sp.found} rubrique${sp.found > 1 ? 's' : ''} reconnue${sp.found > 1 ? 's' : ''} d'après la trame « ${tpl.name} ». Vérifiez, puis importez ; vous pourrez tout modifier ensuite.` : 'Aucun titre de la trame n\'a été reconnu : le texte entier sera placé dans une seule rubrique « Compte rendu » (modifiable).' }),
-          ...(sp.preamble && sp.found ? [h('div', { class: 'banner', style: { marginTop: 0 } }, icon('info'), h('div', { text: 'Le texte placé avant la première rubrique sera conservé dans une rubrique « Introduction ».' }))] : []),
-          ...items.map((x) => h('div', { class: 'card', style: { marginTop: '8px' } }, h('div', { style: { fontWeight: '600', color: 'var(--ink)' }, text: x.title }), h('div', { class: 'hint', style: { margin: '2px 0 0' }, text: `${x.content.length.toLocaleString('fr-FR')} caractères` }))));
+      const tsec = tpl ? tpl.sections : [];
+      const sp = parseReport(text, tsec);
+      const mapping = {};
+      sp.blocks.forEach((b, i) => { mapping[i] = b.match ? 't:' + b.match.idx : 'new'; });
+      sheet({ title: 'Importer le compte rendu', wide: true, build(b, close) {
+        const nDet = sp.blocks.length, nOk = sp.found;
+        b.append(h('p', { class: 'hint', style: { marginTop: 0 }, text: !nDet
+          ? 'Aucun titre de rubrique détecté dans ce texte. Il sera conservé en entier dans « Introduction » : vous pourrez le déplacer ou le découper ensuite.'
+          : `${nDet} partie${nDet > 1 ? 's' : ''} détectée${nDet > 1 ? 's' : ''}, dont ${nOk} reconnue${nOk > 1 ? 's' : ''} d'après la trame${tpl ? ' « ' + tpl.name + ' »' : ''}. Vérifiez la correspondance de chacune avant d'importer ; vous pourrez tout modifier ensuite.` }));
+        if (sp.preamble) b.append(h('div', { class: 'banner', style: { marginTop: 0 } }, icon('info'), h('div', { text: 'Le texte placé avant la première rubrique est conservé dans une rubrique « Introduction ».' })));
+        const used = () => { const c = {}; Object.values(mapping).forEach((m) => { c[m] = (c[m] || 0) + 1; }); return c; };
+        const dupNote = h('p', { class: 'hint', style: { color: 'var(--warn, #9a6700)' } });
+        const refreshDup = () => { const c = used(); const n = Object.entries(c).filter(([m, k]) => m.startsWith('t:') && k > 1).length; dupNote.textContent = n ? 'Plusieurs parties vont dans la même rubrique : leur texte sera mis à la suite.' : ''; };
+        sp.blocks.forEach((blk, i) => {
+          const sel = h('select', { class: 'field', 'aria-label': 'Rubrique de destination pour « ' + blk.title + ' »' });
+          tsec.forEach((ts, n) => sel.append(h('option', { value: 't:' + n, text: (ts.level === 2 ? '↳ ' : '') + ts.title })));
+          sel.append(h('option', { value: 'new', text: '➕ Nouvelle rubrique « ' + blk.title + ' »' }));
+          if (i > 0) sel.append(h('option', { value: 'prev', text: '⤴ À la suite de la partie précédente' }));
+          sel.value = mapping[i];
+          sel.addEventListener('change', () => { mapping[i] = sel.value; refreshDup(); });
+          const firstLine = (blk.content.split('\n').find((l) => l.trim()) || '').slice(0, 110);
+          b.append(h('div', { class: 'card', style: { marginTop: '8px' } },
+            h('div', { style: { fontWeight: '600', color: 'var(--ink)' }, text: blk.detected + (blk.match ? (blk.match.how === 'exact' ? '  ✓' : '  ≈ reconnue') : '  ? non reconnue') }),
+            h('div', { class: 'hint', style: { margin: '2px 0 6px' }, text: `${blk.content.length.toLocaleString('fr-FR')} caractères${firstLine ? ' · ' + firstLine : ''}` }), sel));
+        });
+        b.append(dupNote);
         if (S.hasReport(e)) b.append(h('p', { class: 'hint', text: 'Le compte rendu actuel est conservé dans « Compte rendu précédent » (rétablissement possible).' }));
+        b.append(h('details', { class: 'evid' }, h('summary', { text: 'Texte reçu de ChatGPT (conservé tel quel dans la fiche)' }), h('pre', { class: 'pview doc', style: { whiteSpace: 'pre-wrap' }, text: sp.raw })));
         b.append(h('div', { class: 'sheet-actions' },
           h('button', { class: 'btn primary', text: 'Importer dans la fiche', onclick: async () => {
             if (S.hasReport(e)) e.reportHistory = S.pushHistory(e.reportHistory, { text: JSON.stringify(e.reportSections || []), reason: 'avant import ChatGPT' });
-            const secs = (sp.found ? sp.sections : [{ title: 'Compte rendu', content: text }]).map((x) => ({ id: S.uid('r'), title: x.title, content: x.content }));
-            if (sp.found && sp.preamble) secs.unshift({ id: S.uid('r'), title: 'Introduction', content: sp.preamble });
-            // les rubriques de la trame non retrouvées restent présentes, vides, à rédiger
-            if (tpl && sp.found) for (const ts of tpl.sections) if (!secs.some((x) => normTitle(x.title) === normTitle(ts.title))) secs.push({ id: S.uid('r'), title: ts.title, content: '' });
-            e.reportSections = secs; e.namesRestored = false; delete e.iaInfo;
+            const secs = nDet ? buildSections(sp, tsec, mapping, S.uid) : [{ id: S.uid('r'), title: 'Introduction', content: sp.preamble || sp.raw.trim() }, ...tsec.map((ts) => ({ id: S.uid('r'), title: ts.title, content: '', ...(ts.level === 2 ? { level: 2 } : {}) }))];
+            e.reportSections = secs; e.reportRaw = sp.raw; e.reportRawAt = Date.now(); e.namesRestored = false; delete e.iaInfo;
             edit(); await saver.flush(); close(); toast('Compte rendu importé'); refresh();
           } }), h('button', { class: 'btn', text: 'Annuler', onclick: close })));
       } });
     } }, icon('check'), h('span', { text: 'Importer dans les rubriques' }));
     const restoreBtn = h('button', { class: 'btn small', onclick: () => restoreNamesFlow(refresh) }, icon('user'), h('span', { text: 'Remettre les vrais noms (facultatif)' }));
     return h('div', { class: 'card' }, h('div', { class: 'rt serif', style: { fontSize: '19px', color: 'var(--ink)' }, text: 'Coller le compte rendu de ChatGPT' }),
-      h('p', { class: 'hint', text: 'Collez la réponse de ChatGPT. Elle est découpée en rubriques d\'après la trame choisie, puis vous pouvez la relire et la modifier.' }), ta,
+      h('p', { class: 'hint', text: 'Collez la réponse de ChatGPT. Elle est découpée en rubriques d\'après la trame choisie ; vous vérifiez la correspondance avant l\'import, puis vous pouvez la relire et la modifier.' }), ta,
       h('div', { class: 'btn-row', style: { marginTop: '10px' } }, pasteBtn, importBtn), h('div', { style: { height: '8px' } }), S.hasReport(e) ? restoreBtn : null);
   }
   // Réintégration LOCALE et facultative des identités : étiquette → nom d'origine, avec aperçu et vérification avant export. La table ne quitte jamais l'appareil.

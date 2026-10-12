@@ -16,10 +16,16 @@ export function reportText(e, folders, templateName) {
   if (templateName) parts.push('Trame : ' + templateName);
   parts.push('');
   if (e.iaInfo && !e.iaInfo.reviewed) parts.push('[BROUILLON généré par IA : relecture humaine requise avant utilisation]', '');
-  for (const s of reportOf(e)) {
-    if (!(s.content || '').trim()) continue;
-    parts.push(s.title.toUpperCase(), s.content.trim(), '');
-  }
+  const secs = reportOf(e);
+  secs.forEach((s, i) => {
+    if (!(s.content || '').trim()) {
+      // rubrique-parent sans texte propre : son titre reste si une sous-rubrique rédigée la suit
+      let sub = false; if (s.level !== 2) for (let k = i + 1; k < secs.length && secs[k].level === 2; k++) if ((secs[k].content || '').trim()) { sub = true; break; }
+      if (sub) parts.push(s.title.toUpperCase(), '');
+      return;
+    }
+    parts.push(s.level === 2 ? s.title + ' :' : s.title.toUpperCase(), s.content.trim(), '');
+  });
   return parts.join('\n').trim() + '\n';
 }
 

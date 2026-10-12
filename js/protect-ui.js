@@ -395,7 +395,7 @@ export function protectTab({ e, templates, edit, saver, parcours = false }) {
     const template = templates.find((x) => x.id === sel.value) || templates[0];
     if (!template) return toast('Choisissez une trame.');
     const { exp } = ctx;
-    const prompt = exp.buildPrompt({ template, categoryLabel: e.category ? catLabel(e.category) : '', protectedText: res.protectedText });
+    const prompt = exp.buildPrompt({ template, categoryLabel: e.category ? catLabel(e.category) : '', protectedText: res.protectedText, dateMs: e.date });
     // contrôle : aucun original masqué, aucun nom de la fiche, pas le titre de la fiche
     const leaks = ctx.eng.leakCheck(prompt, res.spans, P.sheet).filter((l) => l.kind === 'oubli');
     const titleLeak = e.title && e.title.length > 4 && prompt.toLowerCase().includes(e.title.toLowerCase());

@@ -174,17 +174,18 @@ export function sanitize(obj) {
   const templates = (Array.isArray(obj.templates) ? obj.templates : []).filter((t) => t && idOk(t.id) && Array.isArray(t.sections)).map((t) => ({
     id: t.id, category: catOk(t.category) || 'clients', name: str(t.name, 200) || 'Trame', builtin: !!t.builtin, isDefault: !!t.isDefault,
     updatedAt: num(t.updatedAt, Date.now()),
-    sections: t.sections.slice(0, 60).map((s) => ({ id: idOk(s && s.id) ? s.id : uid('r'), title: str(s && s.title, 200), instruction: str(s && s.instruction, 2000) })),
+    sections: t.sections.slice(0, 60).map((s) => ({ id: idOk(s && s.id) ? s.id : uid('r'), title: str(s && s.title, 200), instruction: str(s && s.instruction, 2000), ...(s && s.level === 2 ? { level: 2 } : {}) })),
   }));
   const sessions = (Array.isArray(obj.sessions) ? obj.sessions : []).filter((s) => s && idOk(s.id)).map((s) => ({
     id: s.id, title: str(s.title ?? s.name, 300) || 'Sans titre', name: str(s.title ?? s.name, 300) || 'Sans titre',
     category: catOk(s.category), folderId: idOk(s.folderId) ? s.folderId : null, date: num(s.date, num(s.createdAt, Date.now())),
     templateId: idOk(s.templateId) ? s.templateId : null,
     transcript: typeof s.transcript === 'string' ? s.transcript.slice(0, 3000000) : null,
-    reportSections: Array.isArray(s.reportSections) ? s.reportSections.slice(0, 80).map((r) => ({ id: idOk(r && r.id) ? r.id : uid('r'), title: str(r && r.title, 200), content: str(r && r.content), ...(r && r.ia ? { ia: true } : {}), ...(r && r.edited ? { edited: true } : {}), ...(r && Array.isArray(r.evidence) ? { evidence: evid(r.evidence) } : {}), ...(r && Array.isArray(r.flags) ? { flags: flg(r.flags) } : {}) })) : null,
+    reportSections: Array.isArray(s.reportSections) ? s.reportSections.slice(0, 80).map((r) => ({ id: idOk(r && r.id) ? r.id : uid('r'), title: str(r && r.title, 200), content: str(r && r.content), ...(r && r.level === 2 ? { level: 2 } : {}), ...(r && r.ia ? { ia: true } : {}), ...(r && r.edited ? { edited: true } : {}), ...(r && Array.isArray(r.evidence) ? { evidence: evid(r.evidence) } : {}), ...(r && Array.isArray(r.flags) ? { flags: flg(r.flags) } : {}) })) : null,
     ...(s.iaInfo && typeof s.iaInfo === 'object' ? { iaInfo: { engine: str(s.iaInfo.engine, 20), model: str(s.iaInfo.model, 120), label: str(s.iaInfo.label, 200), date: num(s.iaInfo.date, 0), seconds: num(s.iaInfo.seconds, 0), calls: num(s.iaInfo.calls, 0), rejected: num(s.iaInfo.rejected, 0), flags: flg(s.iaInfo.flags), reviewed: !!s.iaInfo.reviewed, ...(s.iaInfo.reviewedAt ? { reviewedAt: num(s.iaInfo.reviewedAt, 0) } : {}) } } : {}),
     who: str(s.who, 120), subject: str(s.subject, 160), titleAuto: !!s.titleAuto,
     transcriptHistory: hist(s.transcriptHistory), reportHistory: hist(s.reportHistory),
+    ...(typeof s.reportRaw === 'string' && s.reportRaw ? { reportRaw: s.reportRaw.slice(0, 500000), reportRawAt: num(s.reportRawAt, 0) } : {}),
     summary: str(s.summary), source: str(s.source, 20) || 'texte',
     segments: Array.isArray(s.segments) ? s.segments.slice(0, 20000).map((g) => ({ t: num(g && g.t), text: str(g && g.text, 5000) })) : [],
     bookmarks: [], createdAt: num(s.createdAt, Date.now()), updatedAt: num(s.updatedAt, Date.now()),

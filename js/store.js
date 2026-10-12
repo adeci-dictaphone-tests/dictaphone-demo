@@ -270,7 +270,8 @@ export function descendantIds(id, folders) {
 // ---------- Trames ----------
 // Trames masquées de la liste par défaut : simple préférence d'affichage, réversible. Une trame masquée n'est ni supprimée ni modifiée,
 // et les fiches qui l'utilisent la conservent (elle reste visible dans leur propre écran).
-const HIDDEN_BY_DEFAULT = ['tpl-clients-detail', 'tpl-premier-rdv', 'tpl-suivi-patrimonial'];
+const HIDDEN_BY_DEFAULT = ['tpl-clients', 'tpl-clients-detail', 'tpl-premier-rdv', 'tpl-suivi-patrimonial'];
+const OLD_CLIENT_TEMPLATE_NAME = 'Entretien client (ancienne trame, 9 rubriques)';
 export function hiddenTemplateIds() { const s = getSettings(); return Array.isArray(s.hiddenTemplates) ? s.hiddenTemplates.slice() : HIDDEN_BY_DEFAULT.slice(); }
 export const isTemplateHidden = (id) => hiddenTemplateIds().includes(id);
 export function setTemplateHidden(id, hidden) { const cur = new Set(hiddenTemplateIds()); if (hidden) cur.add(id); else cur.delete(id); setSetting('hiddenTemplates', [...cur]); }
@@ -279,7 +280,21 @@ export const hasExplicitHidden = () => Array.isArray(getSettings().hiddenTemplat
 export const visibleTemplates = (list, keepIds = []) => list.filter((t) => !isTemplateHidden(t.id) || keepIds.includes(t.id));
 export async function ensureDefaults() {
   const have = new Set((await DB.listTemplates()).map((t) => t.id));
+  const addedV2 = !have.has('tpl-clients-v2');
   for (const d of DEFAULT_TEMPLATES) if (!have.has(d.id)) await DB.putTemplate(withIds(clone(d)));
+  // Migration unique : la nouvelle trame « Entretien client » (six rubriques) devient la trame par défaut ; l'ancienne trame à neuf rubriques
+  // est renommée et masquée, jamais supprimée ni modifiée dans ses rubriques. Les fiches existantes gardent leur trame et leur contenu.
+  if (addedV2 && have.has('tpl-clients')) {
+    const all = await DB.listTemplates();
+    const old = all.find((t) => t.id === 'tpl-clients'), v2 = all.find((t) => t.id === 'tpl-clients-v2');
+    if (old) {
+      if (old.name === 'Entretien client') old.name = OLD_CLIENT_TEMPLATE_NAME;
+      const otherDefault = all.some((t) => t.category === 'clients' && t.isDefault && t.id !== 'tpl-clients' && t.id !== 'tpl-clients-v2');
+      old.isDefault = false; await DB.putTemplate(old);
+      if (v2 && otherDefault) { v2.isDefault = false; await DB.putTemplate(v2); }
+      setTemplateHidden('tpl-clients', true);
+    }
+  }
 }
 const withIds = (t) => { t.sections = t.sections.map((s) => ({ id: s.id || uid('r'), ...s })); t.updatedAt = Date.now(); return t; };
 export const newSection = (title = '', instruction = '') => ({ id: uid('r'), title, instruction });
@@ -312,7 +327,7 @@ export const defaultTemplateFor = (templates, category) =>
   templates.find((t) => t.category === category && t.isDefault) || templates.find((t) => t.category === category) || null;
 
 // Plan d'un compte rendu à partir d'une trame (rubriques vides, à rédiger)
-export const sectionsFromTemplate = (t) => t.sections.map((s) => ({ id: uid('r'), title: s.title, content: '' }));
+export const sectionsFromTemplate = (t) => t.sections.map((s) => ({ id: uid('r'), title: s.title, content: '', ...(s.level === 2 ? { level: 2 } : {}) }));
 
 // ---------- Vocabulaire de correction ----------
 const VOCAB_KEY = 'dia_vocab';

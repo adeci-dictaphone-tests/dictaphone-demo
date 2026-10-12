@@ -20,12 +20,28 @@ export async function homeView() {
   const todo = entretiens.filter((e) => stepOf(e) !== 'termine').sort((a, b) => Math.max(b.updatedAt, b.date) - Math.max(a.updatedAt, a.date));
   const nToWrite = todo.length;
   const now = new Date();
+  // Coffre : invitation à l'activer, ou bouton « Verrouiller » (sur ordinateur, ce bouton est dans le menu de gauche)
+  const vaultSlot = h('div', {});
+  (async () => {
+    try {
+      const V = await import('./vault.js');
+      const st = V.state();
+      if (st === 'absent') { const m = await import('./vault-ui.js'); const c = m.inviteCard(); if (c) vaultSlot.append(c); }
+      else if (st === 'unlocked') {
+        const m = await import('./vault-ui.js'); const sp = m.spaceName();
+        vaultSlot.append(h('div', { class: 'lock-home' }, h('span', { class: 'hint', text: (sp ? 'Espace : ' + sp + ' · ' : '') + 'Coffre actif' }),
+          h('button', { class: 'btn small', onclick: () => V.lock() }, icon('shield'), h('span', { text: 'Verrouiller' }))));
+      }
+    } catch { /* l'invitation est facultative */ }
+  })();
 
   const el = h('div', { class: 'view home' },
     h('div', { class: 'brand' },
       h('img', { src: 'img/emblem-tile.png', alt: '', width: 46, height: 46 }),
       h('div', {}, h('div', { class: 'name', text: 'Dictaphone IA' }), h('div', { class: 'sub', text: 'Ade-ci Family Office' })),
       h('div', { class: 'date' }, h('div', { text: cap(now.toLocaleDateString('fr-FR', { weekday: 'long' })) }), h('div', { text: now.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) }))),
+
+    vaultSlot,
 
     h('section', { class: 'hero' },
       h('div', { class: 'eyebrow', text: 'Nouvelle transcription' }),

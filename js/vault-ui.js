@@ -5,6 +5,31 @@ import * as V from './vault.js';
 import * as B from './backup.js';
 import { shareOrDownload, copyText } from './exports.js';
 import { APP_VERSION } from './version.js';
+import { getSettings, setSetting } from './store.js';
+
+// ---------- Nom d'espace (libellé NON secret : aide à reconnaître à qui est cet espace, n'authentifie personne) ----------
+export const spaceName = () => { const v = getSettings().spaceName; return typeof v === 'string' ? v.trim().slice(0, 40) : ''; };
+function spaceNameRow() {
+  const inp = h('input', { class: 'field', value: spaceName(), maxlength: '40', placeholder: 'Ex. Espace de Marie', 'aria-label': 'Nom de l\'espace', autocomplete: 'off' });
+  inp.addEventListener('change', () => { setSetting('spaceName', inp.value.trim().slice(0, 40)); window.dispatchEvent(new Event('dia-space')); toast('Nom d\'espace enregistré'); });
+  return h('div', { style: { marginTop: '14px' } },
+    h('label', { class: 'lbl', text: 'Nom de l\'espace (facultatif)' }), inp,
+    h('p', { class: 'hint', text: 'Affiché sur l\'écran de verrouillage et dans le menu, pour reconnaître cet espace. Ce n\'est pas un identifiant de connexion : n\'y mettez aucune information confidentielle. Chaque navigateur ou session Windows garde son propre espace.' }));
+}
+
+// ---------- Invitation à activer le coffre (accueil) : disparaît une fois activé, ou 7 jours si « Plus tard » ----------
+export function inviteCard() {
+  if (V.state() !== 'absent') return null;
+  const until = Number(getSettings().vaultInviteUntil) || 0;
+  if (until > Date.now()) return null;
+  const card = h('div', { class: 'banner', style: { marginTop: '12px' } }, icon('shield'), h('div', {},
+    h('div', { style: { fontWeight: '700' }, text: 'Protégez vos fiches par un mot de passe' }),
+    h('p', { class: 'hint', style: { margin: '4px 0 8px' }, text: 'Le coffre chiffre vos fiches sur cet appareil. Le mot de passe est demandé à l\'ouverture et après un délai d\'inactivité ; une clé de récupération vous est remise. Aucun compte en ligne, rien n\'est envoyé.' }),
+    h('div', { class: 'btn-row' },
+      h('button', { class: 'btn small primary', text: 'Activer le coffre', onclick: () => wizard({ refresh: () => card.remove() }) }),
+      h('button', { class: 'btn small', text: 'Plus tard', onclick: () => { setSetting('vaultInviteUntil', Date.now() + 7 * 86400000); card.remove(); } }))));
+  return card;
+}
 
 // ---------- Écran de verrouillage (plein écran) ----------
 export function lockScreen() {
@@ -17,6 +42,7 @@ export function lockScreen() {
       h('div', { class: 'lock-box' },
         h('img', { src: 'img/emblem-tile.png', alt: '', width: 72, height: 72, style: { borderRadius: '18px' } }),
         h('h1', { class: 'serif', style: { fontSize: '28px', margin: '14px 0 4px' }, text: 'Dictaphone IA est verrouillé' }),
+        spaceName() ? h('p', { class: 'hint', style: { fontWeight: '600', color: 'var(--ink)' }, text: 'Espace : ' + spaceName() }) : null,
         h('p', { class: 'hint', text: 'Vos fiches sont chiffrées sur cet appareil. Saisissez votre mot de passe.' }),
         pw, h('div', { style: { height: '10px' } }), go, bioBtn, msg,
         h('button', { class: 'linkbtn', type: 'button', text: 'Mot de passe oublié ? Utiliser la clé de récupération', onclick: recovery })));
@@ -75,7 +101,8 @@ export function securityBlock({ refresh }) {
         h('div', { style: { fontWeight: '700', color: 'var(--ink)' }, text: 'Coffre chiffré : non activé' }),
         h('p', { class: 'hint', text: 'Chiffre réellement vos fiches, dossiers et fichiers importés avec un mot de passe (AES-256). Sans lui, les données restent illisibles pour quiconque copierait le contenu du navigateur. Ce n\'est pas un simple écran de verrouillage.' }),
         h('p', { class: 'hint', text: 'Attention : si vous perdez à la fois le mot de passe et la clé de récupération, vos données chiffrées sont définitivement perdues. L\'activation exige une sauvegarde vérifiée.' }),
-        h('button', { class: 'btn primary', onclick: () => wizard({ refresh: draw }) }, icon('shield'), h('span', { text: 'Activer le coffre chiffré…' })));
+        h('button', { class: 'btn primary', onclick: () => wizard({ refresh: draw }) }, icon('shield'), h('span', { text: 'Activer le coffre chiffré…' })),
+        spaceNameRow());
       return;
     }
     const c = await V.counts();
@@ -94,7 +121,8 @@ export function securityBlock({ refresh }) {
         h('button', { class: 'btn', onclick: () => newRecoverySheet() }, icon('doc'), h('span', { text: 'Nouvelle clé de récupération' })),
         h('button', { class: 'btn danger-ghost', onclick: () => disableSheet({ refresh: draw }) }, icon('trash'), h('span', { text: 'Désactiver le coffre' }))),
       h('p', { class: 'hint', text: 'La désactivation déchiffre toutes vos fiches sur cet appareil.' }),
-      bioNode);
+      bioNode,
+      spaceNameRow());
   }
   draw();
   const off = V.onState(() => { if (!box.isConnected) { off(); return; } draw(); });

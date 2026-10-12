@@ -158,14 +158,19 @@ export async function makePdf({ kind = 'Compte rendu', title, rows = [], section
     line(MARGIN, PAGE_H - 42, PAGE_W - MARGIN, PAGE_H - 42, COL.canard, 0.6);
     y = PAGE_H - 42 - 28;
   };
-  for (const s of sections) {
+  for (let si = 0; si < sections.length; si++) {
+    const s = sections[si];
     const body = (s.content || '').trim();
-    if (!body) continue;
-    const lines = wrap(body, fonts.body, BODY, maxW);
+    // rubrique-parent sans texte propre : son titre est conservé si une sous-rubrique rédigée la suit
+    let parentOnly = false;
+    if (!body && s.level !== 2) for (let k = si + 1; k < sections.length && sections[k].level === 2; k++) if ((sections[k].content || '').trim()) { parentOnly = true; break; }
+    if (!body && !parentOnly) continue;
+    const lines = body ? wrap(body, fonts.body, BODY, maxW) : [];
     const head = (s.title || '').trim();
     if (head) {
       if (y - 20 - LH * Math.min(2, lines.length) < bottom) startPage();
-      text(head, MARGIN, y, fonts.title, 15, COL.canard); y -= 22;
+      if (s.level === 2) { text(head, MARGIN + 10, y, fonts.title, 12, COL.marine); y -= 18; }
+      else { text(head, MARGIN, y, fonts.title, 15, COL.canard); y -= 22; }
     }
     for (const l of lines) {
       if (y - LH < bottom) startPage();

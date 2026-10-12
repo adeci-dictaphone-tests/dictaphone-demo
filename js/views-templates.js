@@ -87,7 +87,10 @@ export async function templateEditView({ params, query }) {
             if ((s.title || s.instruction) && !(await confirmDialog({ title: 'Supprimer cette rubrique ?', message: `« ${s.title || 'Sans titre'} » sera retirée de la trame.`, danger: true, confirmLabel: 'Supprimer' }))) return;
             t.sections.splice(i, 1); mark(); renderSections();
           } }, icon('trash'))),
-        instr));
+        instr,
+        h('label', { class: 'check', style: { marginTop: '6px' } },
+          h('input', { type: 'checkbox', checked: s.level === 2, disabled: i === 0, onchange: (ev) => { if (ev.target.checked) s.level = 2; else delete s.level; mark(); } }),
+          h('span', { text: 'Sous-rubrique de la rubrique précédente (affichée en retrait)' }))));
     });
     box.append(h('button', { class: 'btn small', onclick: () => { t.sections.push(S.newSection()); mark(); renderSections(); setTimeout(() => { const f = box.querySelectorAll('.sec-edit .field'); f[f.length - 1] && f[f.length - 1].focus(); }, 60); } }, icon('plus'), h('span', { text: 'Ajouter une rubrique' })));
   }

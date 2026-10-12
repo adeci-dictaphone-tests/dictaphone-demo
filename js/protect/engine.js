@@ -366,6 +366,8 @@ export function protect(text, options = {}) {
   for (const m of fmatches("(?:retrait\\w*|ancien(?:ne)?s?\\s+(?:salarie|employe|cadre|agent|collaborat)\\w*|ex[- ](?:salarie|employe|cadre|agent)\\w*)\\s+(?:de|du|d'|des|chez)\\s*(?:la\\s+|le\\s+|l')?")) {
     const seq = capSeqAt(text, m.index + m[0].length, 4);
     if (!okSeq(seq)) continue;
+    // « la retraite de Bernard » (nom commun, sans accent) : le prénom qui suit est le titulaire, pas un ancien employeur
+    if (/^retraites?\b/i.test(text.slice(m.index, m.index + m[0].length)) && first.has(fold(seq.text))) continue;
     add({ start: seq.start, end: seq.end, cat: 'EMPLOYEUR', reason: "ancien employeur (« retraité de … »)", rank: RANK.employer, key: fold(seq.text) });
   }
   for (const m of fmatches("\\b(?:mon|son|sa|notre|leur)\\s+(?:employeur|entreprise|societe|boite)\\s*(?:actuel(?:le)?\\s*)?(?:est|c'est|s'appelle|:|,)\\s+(?:la\\s+|le\\s+|l')?")) {
@@ -422,8 +424,11 @@ export function protect(text, options = {}) {
   }
   for (const m of fmatches("\\b(?:actions?|titres?|parts?|obligations?|fonds|sicav|scpi|contrats?|assurance[- ]vie)\\s+(?:de\\s+|d'|du\\s+|chez\\s+)?")) {
     if (/\p{Lu}/u.test(text[m.index] || '')) continue;                               // « Actions Monde » : partie d'un nom de fonds, pas un indice
-    const seq = capSeqAt(text, m.index + m[0].length, 4);
+    let seq = capSeqAt(text, m.index + m[0].length, 4);
     if (!seq || NOT_NAME.has(fold(seq.text.split(/\s+/)[0]))) continue;
+    // « contrat Afer de Colette » : le titulaire (prénom connu après « de ») n'appartient pas au nom du produit
+    const hold = /\s+(?:de|du|des|d')\s*(?=\p{Lu})(\p{Lu}[\p{L}'’\-]*)/u.exec(seq.text);
+    if (hold && hold.index > 0 && first.has(fold(hold[1]))) seq = { start: seq.start, end: seq.start + hold.index, text: seq.text.slice(0, hold.index) };
     const fn = fold(seq.text);
     let known = false; for (const k of lex.aliasMap.keys()) if (fn === k || fn.startsWith(k + ' ')) { known = true; break; }
     if (known) add({ start: seq.start, end: seq.end, cat: 'ETABLISSEMENT', decision: 'keep', reason: 'nom commençant par un établissement ou un fonds connu', rank: RANK.lexicon - 5, key: fn, silent: true });

@@ -125,6 +125,15 @@ async function showLock({ rerender = true } = {}) {
   try { const m = await import('./vault-ui.js'); await m.lockScreen(); } finally { lockShown = false; }
   if (rerender) await render();
 }
+// Menu de gauche (ordinateur) : « Verrouiller » toujours accessible tant que le coffre est actif et déverrouillé ; nom d'espace facultatif
+function mountLockControl() {
+  const bar = document.querySelector('.tabbar'); if (!bar) return;
+  const lab = h('div', { class: 'lock-space' });
+  const btn = h('button', { class: 'btn small', type: 'button', 'aria-label': 'Verrouiller maintenant', onclick: () => V.lock() }, icon('shield'), h('span', { text: 'Verrouiller' }));
+  const box = h('div', { class: 'lock-slot' }, lab, btn);
+  const sync = () => { box.hidden = V.state() !== 'unlocked'; const n = (S.getSettings().spaceName || '').trim().slice(0, 40); lab.textContent = n ? 'Espace : ' + n : ''; lab.hidden = !n; };
+  bar.append(box); sync(); V.onState(sync); window.addEventListener('dia-space', sync);
+}
 DESK.addEventListener('change', () => render());window.addEventListener('hashchange', render);
 window.addEventListener('unhandledrejection', (e) => { console.error('Erreur :', e.reason && e.reason.message); toast('Une erreur est survenue.'); });
 
@@ -134,6 +143,7 @@ window.addEventListener('unhandledrejection', (e) => { console.error('Erreur :',
     V.onState((st) => { if (st === 'locked') showLock(); });
     if (V.state() === 'locked') await showLock({ rerender: false });
   } catch (err) { console.error('Coffre :', err && err.message); }
+  try { mountLockControl(); } catch (err) { console.error('Verrouillage :', err && err.message); }
   try {
     const defaults = S.ensureDefaults();
     defaults.catch(() => {});
